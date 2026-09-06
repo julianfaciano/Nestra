@@ -1,0 +1,17 @@
+{
+  "name": "rotation_minus90_1_copia.png",
+  "width": 64,
+  "height": 128,
+  "offsetX": -3.75,
+  "offsetY": 8.25,
+  "pieces": [
+    {
+      "source": 0,
+      "translateX": -1.5,
+      "translateY": 99.79166666666667,
+      "width": 29.166666666666668,
+      "height": 20.833333333333332,
+      "rotation": -90
+    }
+  ]
+}

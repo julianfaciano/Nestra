@@ -1,0 +1,44 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+src-tauri/target
+src-tauri/gen
+*.tsbuildinfo
+.tools
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Temporary files and tool caches
+*.tmp
+*.temp
+.cache/
+.vite/
+coverage/
+Thumbs.db
+Desktop.ini
+
+# Local backups and captured production inputs (not deliberate fixtures)
+*.bak
+*.backup
+*~
+/diagnostics/batch-real-*.json
+/src-tauri/png-bench/forensic-report/

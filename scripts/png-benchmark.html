@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8"><title>Nestra PNG benchmark</title>
+<script type="module">
+import { drawStrip, STRIP_ROWS } from '/src/export/png-export.ts';
+import { PX_PER_MM } from '/src/export/export-plan.ts';
+try {
+  const started = performance.now();
+  const source = document.createElement('canvas'); source.width = 240; source.height = 300;
+  const context = source.getContext('2d'); const data = context.createImageData(240, 300);
+  for (let y = 0; y < 300; y++) for (let x = 0; x < 240; x++) {
+    data.data.set([(x * 7 + y) % 256, (y * 3) % 256, (x + y * 5) % 256,
+      x < 8 || y < 8 || x > 231 || y > 291 ? 0 : 100 + (x + y) % 156], (y * 240 + x) * 4);
+  }
+  context.putImageData(data, 0, 0);
+  const blob = await new Promise(r => source.toBlob(r, 'image/png'));
+  const decodeStart = performance.now(); const image = await createImageBitmap(blob); const decodeMs = performance.now() - decodeStart;
+  await fetch('/__png_benchmark/source', { method: 'POST', body: blob });
+  const plan = { name: 'benchmark_1_copia.png', width: 8000, height: 15000, offsetX: 0, offsetY: 0,
+    pieces: Array.from({ length: 96 }, (_, i) => ({ source: 0, translateX: (i % 8) * 1000 + (i % 2 ? 1000 : 0),
+      translateY: Math.floor(i / 8) * 1250 + (i % 2 ? 1250 : 0), width: 1000, height: 1250, rotation: i % 2 ? 180 : 0 })) };
+  await fetch('/__png_benchmark/plan', { method: 'POST', body: JSON.stringify(plan) });
+  const layout = { widthPx: plan.width, heightPx: plan.height, offsetX: 0, offsetY: 0,
+    pieces: plan.pieces.map(p => ({ definition: { id: 'source', physicalWidthMm: p.width / PX_PER_MM, physicalHeightMm: p.height / PX_PER_MM },
+      translateX: p.translateX / PX_PER_MM, translateY: p.translateY / PX_PER_MM, placement: { rotation: p.rotation } })) };
+  const canvas = document.createElement('canvas'); canvas.width = plan.width; canvas.height = STRIP_ROWS;
+  const cc = canvas.getContext('2d', { willReadFrequently: true });
+  let renderMs = 0, transferMs = 0, strips = 0;
+  for (let y = 0; y < plan.height; y += STRIP_ROWS) {
+    const begin = performance.now(); const rows = Math.min(STRIP_ROWS, plan.height - y);
+    drawStrip(cc, layout, new Map([['source', image]]), y, rows);
+    const rgba = cc.getImageData(0, 0, plan.width, rows).data;
+    const rgb = new Uint8Array(plan.width * rows * 3);
+    for (let i = 0, j = 0; i < rgba.length; i += 4) { rgb[j++] = rgba[i]; rgb[j++] = rgba[i+1]; rgb[j++] = rgba[i+2]; }
+    renderMs += performance.now() - begin;
+    const transfer = performance.now();
+    const response = await fetch('/__png_benchmark/strip', { method: 'POST', body: rgb });
+    if (!response.ok) throw new Error('Benchmark strip write failed');
+    transferMs += performance.now() - transfer; strips++;
+  }
+  window.pngBenchmark = { decodeMs, renderMs, transferHttpAndSpoolMs: transferMs, strips,
+    rasterBytes: plan.width * plan.height * 3, sourceBytes: blob.size, totalBrowserMs: performance.now() - started };
+} catch (error) { window.pngBenchmark = { error: String(error) }; }
+</script>

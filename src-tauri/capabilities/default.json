@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Shell inicial sin comandos IPC habilitados",
+  "windows": ["main"],
+  "permissions": []
+}

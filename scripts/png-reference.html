@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8"><title>Nestra PNG reference fixtures</title>
+<script type="module">
+import { drawStrip, STRIP_ROWS } from '/src/export/png-export.ts';
+import { PX_PER_MM } from '/src/export/export-plan.ts';
+const source = document.createElement('canvas');
+source.width = 7; source.height = 5;
+const sc = source.getContext('2d');
+const data = sc.createImageData(7, 5);
+for (let y = 0; y < 5; y++) for (let x = 0; x < 7; x++) {
+  const i = (y * 7 + x) * 4;
+  data.data.set([x * 39, y * 61, (x * 31 + y * 47) % 256, [0, 64, 128, 200, 255][(x + y) % 5]], i);
+}
+sc.putImageData(data, 0, 0);
+const blob = await new Promise(resolve => source.toBlob(resolve, 'image/png'));
+const image = await createImageBitmap(blob);
+const fixtures = [];
+for (const rotation of [0, 90, -90, 180]) {
+  const w = 7 * 300 / 72, h = 5 * 300 / 72;
+  const x = 2.25 + (rotation === 90 ? h : rotation === 180 ? w : 0);
+  const y = 62.375 + (rotation === -90 ? w : rotation === 180 ? h : 0);
+  fixtures.push({ name: 'rotation_' + String(rotation).replace('-', 'minus') + '_1_copia.png', width: 64, height: 128,
+    offsetX: -3.75, offsetY: 8.25, pieces: [{ source: 0, translateX: x - 3.75, translateY: y + 8.25, width: w, height: h, rotation }] });
+}
+fixtures.push({ name: 'multiple_2_copias_b.png', width: 64, height: 128, offsetX: 0, offsetY: 0, pieces: [
+  { source: 0, translateX: 3, translateY: 4, width: 7, height: 5, rotation: 0 },
+  { source: 0, translateX: 41.25, translateY: 40.5, width: 29.166666666666668, height: 20.833333333333332, rotation: 180 },
+  { source: 0, translateX: 10.5, translateY: 23.75, width: 29.166666666666668, height: 20.833333333333332, rotation: 90 },
+  { source: 0, translateX: 4.5, translateY: 90.125, width: 3.5, height: 2.5, rotation: 0 },
+] });
+// Move the quarter turn into the output, preserving overlap with another image.
+fixtures[4].pieces[2].translateX = 31.5;
+const output = [];
+for (const plan of fixtures) {
+  const layout = { name: plan.name, widthPx: plan.width, heightPx: plan.height, offsetX: plan.offsetX / PX_PER_MM, offsetY: plan.offsetY / PX_PER_MM,
+    pieces: plan.pieces.map(p => ({ definition: { id: 'source', physicalWidthMm: p.width / PX_PER_MM, physicalHeightMm: p.height / PX_PER_MM },
+      translateX: p.translateX / PX_PER_MM, translateY: p.translateY / PX_PER_MM, placement: { rotation: p.rotation } })) };
+  const canvas = document.createElement('canvas'); canvas.width = plan.width; canvas.height = STRIP_ROWS;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  const rgb = [];
+  for (let y = 0; y < plan.height; y += STRIP_ROWS) {
+    const rows = Math.min(STRIP_ROWS, plan.height - y);
+    drawStrip(context, layout, new Map([['source', image]]), y, rows);
+    const rgba = context.getImageData(0, 0, plan.width, rows).data;
+    for (let i = 0; i < rgba.length; i += 4) rgb.push(rgba[i], rgba[i + 1], rgba[i + 2]);
+  }
+  // Roundtrip through the exact frontend plan's physical conversions.
+  plan.offsetX = layout.offsetX * PX_PER_MM; plan.offsetY = layout.offsetY * PX_PER_MM;
+  layout.pieces.forEach((art, i) => Object.assign(plan.pieces[i], { translateX: art.translateX * PX_PER_MM,
+    translateY: art.translateY * PX_PER_MM, width: art.definition.physicalWidthMm * PX_PER_MM, height: art.definition.physicalHeightMm * PX_PER_MM }));
+  output.push({ plan, rgb });
+}
+window.pngFixtures = { source: Array.from(new Uint8Array(await blob.arrayBuffer())), fixtures: output, browser: navigator.userAgent };
+</script>

@@ -1,0 +1,45 @@
+[package]
+name = "nestra-png-compression-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+default-run = "png_compression_bench"
+
+# An independent dependency graph: benchmark features never reach Tauri/Skia.
+[workspace]
+
+[features]
+default = []
+png-zlib-rs = ["png/zlib-rs"]
+libdeflate-disk = ["dep:libdeflater", "dep:windows-sys"]
+
+[dependencies]
+png = "=0.18.1"
+flate2 = "=1.1.10"
+crc32fast = "1"
+tempfile = "3"
+sha2 = "=0.10.9"
+serde_json = "1"
+libdeflater = { version = "=1.26.0", optional = true }
+windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
+
+[lib]
+path = "forensics.rs"
+
+[[bin]]
+name = "png_compression_bench"
+path = "main.rs"
+
+[[bin]]
+name = "png_forensics"
+path = "inspect.rs"
+
+[[bin]]
+name = "png_libdeflate_disk"
+path = "libdeflate_disk.rs"
+required-features = ["libdeflate-disk"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3

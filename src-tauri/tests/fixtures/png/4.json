@@ -1,0 +1,41 @@
+{
+  "name": "multiple_2_copias_b.png",
+  "width": 64,
+  "height": 128,
+  "offsetX": 0,
+  "offsetY": 0,
+  "pieces": [
+    {
+      "source": 0,
+      "translateX": 3,
+      "translateY": 4,
+      "width": 7,
+      "height": 5,
+      "rotation": 0
+    },
+    {
+      "source": 0,
+      "translateX": 41.25,
+      "translateY": 40.5,
+      "width": 29.166666666666668,
+      "height": 20.833333333333332,
+      "rotation": 180
+    },
+    {
+      "source": 0,
+      "translateX": 31.5,
+      "translateY": 23.75,
+      "width": 29.166666666666668,
+      "height": 20.833333333333332,
+      "rotation": 90
+    },
+    {
+      "source": 0,
+      "translateX": 4.5,
+      "translateY": 90.125,
+      "width": 3.5,
+      "height": 2.5,
+      "rotation": 0
+    }
+  ]
+}

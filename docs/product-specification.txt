@@ -1,0 +1,995 @@
+Quiero que construyamos desde cero un proyecto independiente llamado NEStra (nombre visible: “Nestra”), una aplicación de escritorio para Windows orientada a optimización/nesting de artes textiles para sublimación.
+
+IMPORTANTE:
+- Trabajá de forma incremental.
+- Priorizá código seguro, mantenible, modular y fácil de entender.
+- No sobrearquitectes.
+- No implementes todo el producto de una sola vez.
+- Antes de modificar algo estable, explicá por qué hace falta.
+- Usá TypeScript estricto.
+- Evitá `any` salvo casos muy justificados.
+- No uses servicios cloud ni secretos.
+- La app debe funcionar offline.
+- Por ahora el target es únicamente Windows.
+- Quiero una UI minimalista, profesional y de herramienta de producción.
+- Separá claramente UI, dominio, persistencia, geometría/nesting y exportación.
+- Cuando haya decisiones técnicas importantes, explicámelas antes o junto al cambio.
+- Si algo de esta especificación entra en conflicto con una decisión técnica razonable, señalalo en vez de improvisar silenciosamente.
+
+==================================================
+1. OBJETIVO DE NESTRA
+==================================================
+
+Nestra debe recibir diseños textiles de camisetas para mascotas y acomodar automáticamente sus piezas dentro de uno o varios canvas para aprovechar al máximo la tela.
+
+Cada camiseta siempre se compone exactamente de:
+
+- 1 frente / pechera
+- 1 dorso / espalda
+
+El frente y el dorso NO tienen que estar juntos físicamente en el mismo canvas.
+
+Sin embargo, antes de exportar un trabajo, la aplicación debe comprobar que para cada camiseta solicitada estén presentes tanto su frente como su dorso dentro del mismo bloque de producción.
+
+El sistema no debe limitarse a acomodar bounding boxes rectangulares.
+
+Debe estar diseñado para trabajar con las SILUETAS REALES de las piezas, aprovechando zonas transparentes/curvas para permitir que partes de otras piezas entren en esos espacios, siempre sin superposición real.
+
+El objetivo principal del optimizador será:
+
+1. minimizar superficie/largo de tela utilizado;
+2. respetar todas las restricciones duras;
+3. como criterio secundario, reducir la cantidad de layouts distintos cuando existan layouts idénticos que puedan resolverse mediante “copias”.
+
+No vamos a implementar comparación económica entre imprenta y calandra en la primera versión.
+
+==================================================
+2. STACK TÉCNICO
+==================================================
+
+Quiero usar:
+
+- Tauri
+- React
+- TypeScript
+- Rust para la parte pesada / backend local
+- SQLite para persistencia local si realmente aporta valor
+- CSS/Tailwind o una solución equivalente simple para UI
+
+Target inicial:
+
+- Windows
+
+La aplicación debe ser completamente usable offline.
+
+No usar:
+
+- Supabase
+- Firebase
+- servicios externos
+- APIs remotas
+- autenticación
+- almacenamiento cloud
+
+La arquitectura debería permitir en el futuro soportar otras plataformas, pero NO quiero gastar tiempo ahora testeando macOS/Linux.
+
+==================================================
+3. UNIDADES Y GEOMETRÍA
+==================================================
+
+MUY IMPORTANTE:
+
+Internamente NO quiero que el motor geométrico trabaje primariamente en píxeles.
+
+Trabajá usando unidades físicas, preferentemente milímetros.
+
+Ejemplo:
+
+148 cm = 1480 mm.
+
+El layout geométrico debe ser independiente de la resolución raster.
+
+Los píxeles se calculan solamente al momento de render/export.
+
+Esto permitirá:
+
+- PNG a 300 PPI
+- JPG a 300 PPI
+- SVG con dimensiones físicas
+- mantener el mismo layout entre formatos
+
+Usá precisión suficiente para producción textil.
+
+==================================================
+4. CANVAS
+==================================================
+
+El fondo de TODOS los canvas debe ser estrictamente BLANCO.
+
+Tenemos dos modos iniciales:
+
+A) IMPRENTA
+
+- ancho máximo actual: 148 cm
+- alto máximo actual: 100 cm
+- sin tamaño mínimo
+- estos máximos deben quedar configurables porque todavía pueden cambiar
+
+B) CALANDRA
+
+- ancho máximo: 148 cm
+- alto máximo ESTRICTO: 500 cm
+- sin tamaño mínimo
+- JAMÁS permitir superar 500 cm
+
+IMPORTANTE:
+
+148 cm es un MÁXIMO, no un ancho obligatorio.
+
+100 cm / 500 cm son máximos, no alturas obligatorias.
+
+Si un resultado utiliza únicamente:
+
+112.4 cm x 73.2 cm
+
+puede exportarse exactamente con esas dimensiones.
+
+No rellenar artificialmente hasta 148x100 si no hace falta.
+
+Para calandra:
+
+si el trabajo excede 500 cm de largo, se debe dividir automáticamente en más de un canvas.
+
+Ejemplo conceptual:
+
+Canvas A: 148 x 487 cm
+Canvas B: 148 x 221 cm
+
+Nunca crear un canvas de 708 cm.
+
+==================================================
+5. RESOLUCIÓN
+==================================================
+
+Las exportaciones raster deben usar:
+
+300 PPI
+
+PNG será el formato DEFAULT.
+
+También deben existir:
+
+- JPG
+- SVG
+
+PNG:
+- default
+- fondo blanco
+- 300 PPI
+
+JPG:
+- fondo blanco
+- 300 PPI
+- máxima calidad práctica
+
+SVG:
+- dimensiones físicas exactas
+- conservar vectores cuando sea posible
+- si existen elementos raster, pueden estar embebidos/referenciados de forma apropiada
+
+IMPORTANTE PARA EXPORTS GRANDES:
+
+Un canvas de 148 x 500 cm a 300 PPI puede ser gigantesco.
+
+No diseñes el exportador suponiendo que podemos crear siempre un bitmap completo enorme en RAM.
+
+La arquitectura debe permitir render por tiles/chunks/strips o una técnica equivalente para evitar uso absurdo de memoria.
+
+No hace falta implementar el exportador final gigante en la primera fase, pero la arquitectura NO debe bloquear esta solución.
+
+==================================================
+6. TELAS / GRUPOS DE PRODUCCIÓN
+==================================================
+
+Cada prenda pertenece a un TIPO DE TELA.
+
+Ejemplos:
+
+- deportiva
+- polar
+
+REGLA DURA:
+
+PIEZAS DE TELAS DIFERENTES JAMÁS PUEDEN COMPARTIR UN MISMO ARCHIVO/CANVAS.
+
+Por ejemplo:
+
+River T6 deportiva
+River T6 polar
+
+deben producirse necesariamente en archivos distintos.
+
+Dentro de la MISMA tela sí se puede mezclar libremente:
+
+- distintos equipos
+- distintos modelos
+- distintos talles
+- frentes
+- dorsos
+
+Ejemplo válido en un mismo canvas deportiva:
+
+- frente Boca T4
+- dorso River T6
+- frente Argentina T2
+- dorso Tigre T8
+
+siempre que todos sean tela deportiva.
+
+==================================================
+7. LOTES / JORNADAS
+==================================================
+
+Un trabajo puede pertenecer a un lote o jornada.
+
+Los lotes se organizarán principalmente mediante CARPETAS.
+
+No quiero nombres de archivo largos con:
+
+- fecha
+- equipos
+- modelos
+- IDs
+- códigos técnicos
+
+La app puede guardar esa metadata internamente, pero el nombre exportado debe ser muy simple.
+
+==================================================
+8. NOMBRES DE ARCHIVO
+==================================================
+
+Formato deseado:
+
+deportiva_5_copias.png
+polar_2_copias.png
+
+Para una copia:
+
+deportiva_1_copia.png
+polar_1_copia.png
+
+Si existen dos layouts DIFERENTES que necesitarían exactamente el mismo nombre:
+
+polar_2_copias.png
+polar_2_copias_b.png
+polar_2_copias_c.png
+
+etc.
+
+NO usar:
+
+polar_2_copias_2.png
+
+porque el número adicional puede confundirse con la cantidad de copias.
+
+Usar letras:
+
+_b
+_c
+_d
+...
+
+Todo:
+
+- minúsculas
+- sin espacios
+- sin caracteres innecesarios
+
+==================================================
+9. DEDUPLICACIÓN / COPIAS
+==================================================
+
+Si un mismo layout final se necesita varias veces, NO quiero exportar archivos físicos duplicados innecesariamente.
+
+Ejemplo:
+
+En un canvas entran exactamente 3 unidades de T8.
+
+Necesitamos 9 unidades idénticas.
+
+En lugar de:
+
+archivo1.png
+archivo2.png
+archivo3.png
+
+quiero:
+
+deportiva_3_copias.png
+
+La aplicación debe detectar layouts idénticos y agruparlos como “copias”.
+
+IMPORTANTE:
+
+Para que dos layouts sean considerados idénticos deben tener el MISMO CONTENIDO REAL.
+
+No alcanza con que geométricamente tengan tres piezas iguales.
+
+Ejemplo:
+
+3 River T8
+y
+3 Boca T8
+
+NO son el mismo archivo aunque tengan exactamente la misma geometría.
+
+Para deduplicación contemplar como mínimo:
+
+- diseño/modelo
+- lado
+- talle
+- posición
+- rotación
+- tela
+- arte real
+
+==================================================
+10. PIEZAS: FRENTE Y DORSO
+==================================================
+
+Cada producto completo tiene:
+
+1 frente
+1 dorso
+
+Las geometrías de frente y dorso son DISTINTAS.
+
+Por lo tanto tendremos siluetas diferentes.
+
+Rotaciones permitidas:
+
+FRENTE / PECHERA:
+- 0°
+- 90°
+- -90°
+- 180°
+
+DORSO / ESPALDA:
+- 0°
+- 180°
+
+NUNCA permitir automáticamente:
+
+- dorso 90°
+- dorso -90°
+
+Estas reglas se deben modelar como restricciones del dominio, no como hacks en la UI.
+
+==================================================
+11. SEPARACIÓN ENTRE PIEZAS
+==================================================
+
+No hace falta separación física.
+
+Se cortan posteriormente a mano con tijera.
+
+Por lo tanto:
+
+separation = 0 mm
+
+Las formas pueden tocarse exactamente.
+
+Lo único prohibido es:
+
+SUPERPOSICIÓN REAL.
+
+==================================================
+12. SILUETAS BASE
+==================================================
+
+Quiero configurar una sola vez las siluetas de:
+
+T1 frente
+T1 dorso
+T2 frente
+T2 dorso
+...
+T10 frente
+T10 dorso
+
+Total:
+
+20 siluetas base.
+
+Actualmente existen como PNG con transparencia.
+
+Quiero que la app pueda importar estas siluetas y detectar su contorno mediante el canal alpha/transparencia.
+
+Diseñá este módulo pensando en:
+
+- extracción de contorno
+- simplificación del contorno
+- eliminación de ruido/antialiasing
+- mantener precisión suficiente
+- no generar polígonos con cantidades absurdas de vértices
+
+Debe poder visualizarse el:
+
+- PNG original
+- contorno detectado superpuesto
+
+para poder validar manualmente que la detección fue correcta.
+
+No hardcodear todavía el threshold alpha definitivo.
+
+Debe quedar configurable durante la calibración.
+
+==================================================
+13. TALLE MAESTRO
+==================================================
+
+Actualmente tengo artes separados de T1 a T10 en PNG.
+
+Sin embargo, fueron creados reduciendo/escalando manualmente un PNG maestro dentro de Photoshop.
+
+Quiero mejorar ese workflow.
+
+La idea final es:
+
+cada MODELO/Diseño debe tener únicamente:
+
+- 1 arte maestro de frente
+- 1 arte maestro de dorso
+
+Idealmente el talle maestro será T8.
+
+Formato recomendado:
+
+SVG
+
+En el futuro puedo necesitar también soporte para recursos raster dentro del SVG.
+
+La app deberá generar los artes T1-T10 automáticamente a partir del maestro y la calibración de siluetas.
+
+==================================================
+14. ESCALADO DE TALLES
+==================================================
+
+Según mi proceso actual:
+
+T1 a T8 parecen usar principalmente escala proporcional.
+
+T9 y T10 requieren cierta deformación adicional en sentido vertical.
+
+No quiero que el algoritmo “adivine” esto en cada trabajo.
+
+Quiero una CALIBRACIÓN almacenada una sola vez.
+
+Ejemplo conceptual:
+
+T6 frente:
+scaleX = 0.82
+scaleY = 0.82
+
+T9 frente:
+scaleX = 1.08
+scaleY = 1.15
+
+Los valores anteriores son solo ilustrativos.
+
+Frente y dorso deben poder tener calibraciones independientes.
+
+La aplicación deberá permitir:
+
+- escala proporcional
+- scaleX independiente
+- scaleY independiente
+- offset X
+- offset Y si hace falta
+
+Idealmente tendremos una pantalla de calibración visual en la que el usuario pueda verificar cómo encaja el arte maestro dentro de cada silueta.
+
+==================================================
+15. VECTOR / RASTER
+==================================================
+
+No asumir que convertir un PNG a SVG recupera mágicamente detalle vectorial.
+
+El sistema debe aceptar una estrategia híbrida:
+
+- vectores cuando sean realmente vectoriales
+- raster de alta resolución cuando corresponda
+
+Quiero usar SVG como formato maestro recomendado porque permite:
+
+- escalado vectorial
+- contenedor híbrido
+- mejor calidad potencial
+
+Pero el diseño debe quedar abierto a assets raster internos.
+
+No desarrollar ahora un “vectorizador mágico”.
+
+==================================================
+16. ETIQUETA DE TALLE
+==================================================
+
+Cada pieza debe llevar arriba un texto simple:
+
+T1
+T2
+T3
+...
+T10
+
+La etiqueta:
+
+- NO forma parte del producto final
+- se usa únicamente para facilitar producción/corte
+- debe ocupar el menor espacio posible
+- debe seguir siendo legible físicamente
+- debe estar pegada/ubicada inmediatamente encima de la pieza
+- gira junto con la pieza
+
+Ejemplo:
+
+si una pechera rota 90°, el texto T6 rota también 90°.
+
+Geométricamente:
+
+PIEZA = SILUETA + ÁREA OCUPADA POR LA ETIQUETA
+
+El algoritmo NO puede permitir que otra pieza invada el texto.
+
+Elegí inicialmente una tipografía condensada, simple y legible.
+
+Podemos comenzar aproximadamente con:
+
+- altura visual cercana a 4-5 mm
+- separación cercana a 1 mm
+
+pero dejar ambos valores configurables.
+
+No dependas de una fuente comercial/licenciada.
+
+Usar una alternativa libre y segura.
+
+==================================================
+17. SNAP MANUAL
+==================================================
+
+La UI de edición manual debe tener:
+
+Snap ON / OFF
+
+Cuando esté activo:
+
+- snap borde superior
+- snap borde inferior
+- snap borde izquierdo
+- snap borde derecho
+- snap esquinas del canvas
+
+El snap es para EDICIÓN MANUAL.
+
+El algoritmo automático de nesting no debe depender del snap.
+
+Dejar abierta la posibilidad futura de:
+
+- snap pieza-a-pieza
+- guías
+- alineaciones
+
+pero NO hace falta incluirlas inicialmente.
+
+==================================================
+18. EDICIÓN MANUAL
+==================================================
+
+Después de que el optimizador genera un layout, el usuario debe poder:
+
+- seleccionar una pieza
+- moverla
+- rotarla respetando sus rotaciones permitidas
+- activar/desactivar snap
+- eventualmente bloquear piezas
+
+“Bloquear pieza” puede quedar preparado para una fase posterior si complica demasiado el MVP.
+
+Después de una edición manual deben volver a ejecutarse validaciones de:
+
+- colisión
+- límites
+- rotación permitida
+
+==================================================
+19. PREFLIGHT / VALIDACIÓN ANTES DE EXPORTAR
+==================================================
+
+Antes de exportar, ejecutar un preflight obligatorio.
+
+Validaciones mínimas:
+
+1. Cada camiseta requerida tiene exactamente:
+   - frente correspondiente
+   - dorso correspondiente
+
+2. No faltan piezas.
+
+3. No sobran piezas accidentalmente.
+
+4. No se mezclan telas distintas en el mismo canvas.
+
+5. Ninguna pieza sale del canvas.
+
+6. Ninguna pieza supera:
+   - 148 cm de ancho máximo configurado
+   - 100 cm de imprenta actual
+   - 500 cm estricto de calandra
+
+7. No hay superposiciones geométricas.
+
+8. Ninguna etiqueta de talle se superpone incorrectamente.
+
+9. Todas las rotaciones son válidas.
+
+10. La cantidad de copias final coincide con lo requerido.
+
+11. Los assets raster tienen resolución suficiente para el tamaño final.
+    - inicialmente puede ser warning, no necesariamente error.
+
+12. El export raster será 300 PPI.
+
+Mostrar un estado claro:
+
+“Listo para producción”
+
+solo cuando pase el preflight.
+
+==================================================
+20. COLOR
+==================================================
+
+Por ahora:
+
+RGB = DEFAULT
+
+No implementar todavía pipeline CMYK complejo.
+
+Dejar la arquitectura preparada para añadir en el futuro:
+
+- perfil ICC
+- CMYK
+- configuración específica de imprenta/calandra
+
+Pero NO gastar tiempo ahora en esto.
+
+==================================================
+21. MODELO DE DATOS CONCEPTUAL
+==================================================
+
+Pensá en entidades similares a:
+
+FabricType
+ProductionBatch
+GarmentModel
+MasterArtwork
+SizeTemplate
+SizeCalibration
+GarmentRequirement
+PieceInstance
+CanvasProfile
+CanvasLayout
+PlacedPiece
+ExportJob
+
+No hace falta que uses exactamente estos nombres.
+
+Quiero un modelo limpio que represente bien el dominio.
+
+Conceptos importantes:
+
+FabricType:
+- id
+- name/sluggified name para exportación
+
+GarmentModel:
+- modelo/equipo/diseño
+- master front artwork
+- master back artwork
+
+SizeTemplate:
+- size T1-T10
+- side front/back
+- physical dimensions
+- contour polygon/path
+
+SizeCalibration:
+- source/master size
+- target size
+- side
+- scaleX
+- scaleY
+- offsetX
+- offsetY
+
+GarmentRequirement:
+- batch
+- fabric
+- garment model
+- size
+- quantity
+
+PieceInstance:
+- garment requirement
+- side
+- generated artwork reference
+- geometry
+- allowed rotations
+
+CanvasProfile:
+- name
+- maxWidth
+- maxHeight
+- output mode
+
+CanvasLayout:
+- fabric
+- width used
+- height used
+- pieces
+
+PlacedPiece:
+- piece
+- x
+- y
+- rotation
+
+==================================================
+22. MOTOR DE NESTING
+==================================================
+
+NO quiero comenzar implementando de forma ingenua un algoritmo completo y difícil de mantener.
+
+Diseñá una interfaz/abstracción clara para el motor.
+
+Ejemplo conceptual:
+
+NestingEngine.optimize(input) -> layouts
+
+El dominio/UI no debe depender de un algoritmo concreto.
+
+En un comienzo podemos implementar:
+
+- un algoritmo básico
+- o incluso un stub / layout simple para validar todo el flujo
+
+y después reemplazarlo por una estrategia avanzada.
+
+El motor final deberá trabajar con:
+
+- polígonos/formas irregulares
+- rotaciones discretas permitidas
+- colisiones reales
+- múltiples bins/canvas
+- ancho/alto máximos
+- minimizar alto/superficie utilizada
+
+Quiero poder probar eventualmente diferentes estrategias:
+
+- greedy
+- bottom-left
+- largest-first
+- multi-start/randomized
+- heurísticas evolutivas
+- etc.
+
+Pero NO sobreimplementar ahora.
+
+Primero definí bien contratos y tipos.
+
+==================================================
+23. UI / UX
+==================================================
+
+Quiero una UI:
+
+- minimalista
+- moderna
+- profesional
+- clara
+- pensada para trabajo de producción
+- sin estética gamer
+- sin gradientes decorativos innecesarios
+- sin tarjetas gigantes
+- sin exceso de animaciones
+
+La navegación inicial podría contemplar:
+
+1. Inicio / proyectos
+2. Biblioteca de siluetas
+3. Modelos / artes maestros
+4. Nuevo lote
+5. Optimización
+6. Editor de layout
+7. Exportación / preflight
+8. Configuración
+
+Pero no construyas todas las pantallas ya.
+
+==================================================
+24. FASES DE DESARROLLO
+==================================================
+
+QUIERO TRABAJAR INCREMENTALMENTE.
+
+No implementes las fases posteriores hasta validar la anterior.
+
+FASE 0 — Bootstrap
+- crear proyecto Tauri + React + TypeScript
+- estructura de carpetas
+- configuración lint/format
+- build Windows funcionando
+- UI shell mínima
+- tema visual base
+- README inicial
+
+FASE 1 — Dominio + configuración física
+- tipos centrales
+- unidades mm/cm
+- CanvasProfile
+- perfiles Imprenta/Calandra configurables
+- validaciones max width/max height
+- pruebas unitarias
+
+FASE 2 — Biblioteca de siluetas
+- importar PNG transparente
+- metadata
+- T1-T10
+- frente/dorso
+- preview
+- extracción inicial de contorno
+- visualizar contorno
+- guardar configuración local
+
+FASE 3 — Canvas editor básico
+- canvas físico
+- zoom/pan
+- fondo blanco
+- colocar formas manualmente
+- rotaciones permitidas
+- detección de límites
+- snap ON/OFF
+
+FASE 4 — Modelos / maestro
+- importar arte maestro
+- inicialmente SVG
+- frente/dorso
+- calibraciones T1-T10
+- preview maestro dentro de silueta
+
+FASE 5 — Pedidos/lotes
+- tela
+- modelo
+- talle
+- cantidad
+- generación de PieceInstances
+- verificación frente/dorso
+
+FASE 6 — Nesting MVP
+- primera estrategia automática
+- múltiples canvas
+- separación por tela
+- restricciones de rotación
+- métrica de aprovechamiento
+
+FASE 7 — Editor post-nesting
+- mover
+- rotar
+- validar colisiones
+- snap
+- reoptimizar cuando corresponda
+
+FASE 8 — Preflight
+- todas las validaciones finales
+
+FASE 9 — Export
+- posiciones
+- PNG default 300 PPI
+- JPG
+- SVG
+- fondo blanco
+- nombres
+- copias
+- deduplicación
+
+FASE 10 — Optimización avanzada
+- mejorar algoritmo
+- multi-start
+- heurísticas
+- rendimiento
+- layouts grandes
+- export tiled/chunked robusto
+
+NO implementar comparación de precios todavía.
+
+==================================================
+25. TESTS
+==================================================
+
+Quiero tests desde temprano para la lógica importante.
+
+Especialmente:
+
+- conversiones físicas
+- 300 PPI
+- límites 148x100
+- límite estricto 148x500
+- rotaciones
+- separación por tela
+- pairing frente/dorso
+- nombres de archivo
+- sufijos _b, _c
+- deduplicación
+- validación de layouts
+- transformaciones de talle
+
+La UI no necesita cobertura extrema al principio.
+
+Priorizar tests de dominio.
+
+==================================================
+26. CALIDAD DEL CÓDIGO
+==================================================
+
+Reglas:
+
+- funciones pequeñas
+- módulos con responsabilidad clara
+- domain logic fuera de componentes React
+- no meter lógica geométrica compleja en JSX
+- evitar estados globales innecesarios
+- comentarios solo cuando agregan contexto
+- nombres claros
+- no crear abstracciones prematuras
+- no usar números mágicos
+- todas las dimensiones con tipos/unidades claras
+
+Ser particularmente cuidadoso con:
+
+mm
+cm
+inch
+px
+PPI
+
+No mezclar unidades implícitamente.
+
+==================================================
+27. PRIMERA TAREA QUE QUIERO QUE HAGAS AHORA
+==================================================
+
+NO empieces implementando nesting avanzado.
+
+Primero:
+
+1. inspeccioná el entorno/repositorio actual;
+2. si está vacío, creá el proyecto Nestra;
+3. proponé brevemente la estructura técnica;
+4. implementá únicamente FASE 0;
+5. dejá preparado el esqueleto para FASE 1;
+6. ejecutá:
+   - typecheck
+   - lint
+   - tests si corresponde
+   - build/check de Tauri
+7. corregí los errores que aparezcan;
+8. al terminar, explicame:
+   - qué archivos importantes creaste;
+   - qué decisiones tomaste;
+   - cómo ejecutar la app;
+   - qué falta para comenzar FASE 1.
+
+No avances a FASE 1 sin que revisemos primero FASE 0.
+
+El resultado de esta primera iteración debe ser pequeño, limpio y funcional.
