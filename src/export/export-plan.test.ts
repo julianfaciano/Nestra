@@ -35,10 +35,30 @@ function withPlacement(x:number, rotation:0|90|-90|180 = 0): PreparedBatch {
   return {...b, results:[{...r, layouts:[{...l, pieces:[l.pieces[0]!, {...l.pieces[1]!, placement:{x,y:0,rotation}}]}]}]};
 }
 describe('Preflight y plan de exportación', () => {
-  it('permite contacto exacto, recorta al área útil y no rellena el perfil', () => {
+  it('permite contacto exacto y conserva los 1480 mm productivos', () => {
     const report=preflightBatch(batch());
     expect(report.errors).toEqual([]);
-    expect(report.layouts[0]).toMatchObject({widthMm:20,heightMm:20,widthPx:236,heightPx:236,name:'polar_1_copia.png'});
+    expect(report.layouts[0]).toMatchObject({widthMm:1480,heightMm:20,widthPx:17480,heightPx:236,offsetX:0,name:'polar_1_copia.png'});
+  });
+  it('conserva 1480 mm cuando el margen transparente rebasa el origen del nesting', () => {
+    const b = batch();
+    const inset = [{x:2,y:2},{x:8,y:2},{x:8,y:18},{x:2,y:18}];
+    const result = preflightBatch({
+      ...b,
+      polygons: new Map([['front', inset], ['back', inset]]),
+      results: [{
+        ...b.results[0]!,
+        layouts: [{
+          ...b.results[0]!.layouts[0]!,
+          pieces: [
+            {pieceId:'front-1',placement:{x:0,y:0,rotation:0},polygon:transformPolygon(inset,{x:0,y:0,rotation:0})},
+            {pieceId:'back-1',placement:{x:6,y:0,rotation:0},polygon:transformPolygon(inset,{x:6,y:0,rotation:0})},
+          ],
+        }],
+      }],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.layouts[0]).toMatchObject({widthMm:1480,offsetX:-2});
   });
   it('rechaza colisión real', () => expect(preflightBatch(withPlacement(9)).errors.join()).toContain('colisión'));
   it('rechaza fuera del canvas', () => expect(preflightBatch(withPlacement(1480)).errors.join()).toContain('fuera'));
@@ -77,6 +97,16 @@ describe('Preflight y plan de exportación', () => {
   it('genera sufijos alfabéticos también después de z',()=>{
     expect([0,1,2,25,26].map(letterSuffix)).toEqual(['','_b','_c','_z','_aa']);
     expect(fabricSlug(' Polar / Deportivo Á ')).toBe('polar_deportivo_a');
+  });
+  it('usa cualquier texto de tela como prefijo de exportación', () => {
+    const b = batch();
+    const report = preflightBatch({
+      ...b,
+      definitions: b.definitions.map((definition) => ({ ...definition, fabric: 'set' })),
+      results: [{ ...b.results[0]!, fabric: 'set' }],
+    });
+    expect(report.errors).toEqual([]);
+    expect(report.layouts[0]!.name).toBe('set_1_copia.png');
   });
   it('rechaza deformación y admite redondeo mediante escala uniforme',()=>{
     expect(physicalArtworkHeight(100, 80, 100, 100)).toBe(80);

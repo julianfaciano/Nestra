@@ -29,16 +29,37 @@ import { groupPiecesByFabric } from '../domain/fabric-grouping';
 import { getPieceSideLabel, PIECE_SIDES } from '../domain/piece-side';
 import { getAllowedRotationsForPiece } from '../domain/piece-rotation';
 import { DEFAULT_PRODUCTION_FABRIC } from '../domain/fabric';
-import { toggleFill, fillersForInstances, extraCounts, pngPieceSummaries } from '../domain/fill-gaps';
+import {
+  toggleFill,
+  fillersForInstances,
+  extraCounts,
+  pngPieceSummaries,
+} from '../domain/fill-gaps';
 import type { BatchPieceDefinition } from '../domain/production-batch';
 import { GARMENT_SIZES, type GarmentSize } from '../domain/size';
 import { mm } from '../domain/units';
 import { physicalSizeFromSourcePixels } from '../domain/source-image-size';
-import { extractLargestAlphaPolygon } from '../geometry/alpha-polygon';
-import { type MultiNestingPiece } from '../geometry/multi-piece-nesting-engine';
-import { polygonPixelsToMillimeters } from '../geometry/polygon-transform';
+import {
+  extractLargestAlphaPolygon,
+  extractAlphaComponents,
+  extractAlphaPixelBounds,
+  type AlphaPixelBounds,
+} from '../geometry/alpha-polygon';
+import { componentEnvelope } from '../geometry/polygon-components';
+import {
+  type MultiNestingPiece,
+  type NestingProgress,
+} from '../geometry/multi-piece-nesting-engine';
+import {
+  getPolygonBounds,
+  polygonPixelsToMillimeters,
+} from '../geometry/polygon-transform';
 import type { Polygon } from '../geometry/polygon';
-import type { BatchPieceDraft, FreePngDraft, ProductionPieceDraft } from './batch-state';
+import type {
+  BatchPieceDraft,
+  FreePngDraft,
+  ProductionPieceDraft,
+} from './batch-state';
 import { FreePngPanel } from './free-png-panel';
 import { chooseFreePng, validFreePngQuantity } from './free-png-import';
 import type { SizeTemplateDraft } from './size-template-state';
@@ -59,6 +80,7 @@ import {
 } from '../persistence/historical-jobs';
 
 import { buildHistoricalBatchPreviewFiles } from './historical-preview-builder';
+import { summarizeProductionPlacement } from './production-summary';
 
 const DEFAULT_ALPHA_THRESHOLD = 16;
 const FAST_SIMPLIFICATION_PX = 3;
@@ -122,39 +144,39 @@ function buildHistoricalSizeSummary(
       const model = rawModel ?? modelKey;
       const fabric = rawFabric ?? '';
       return {
-      model,
-      fabric,
+        model,
+        fabric,
 
-      sizes: GARMENT_SIZES.map((size) => {
-        const quantities = bySize.get(size);
+        sizes: GARMENT_SIZES.map((size) => {
+          const quantities = bySize.get(size);
 
-        if (!quantities) {
-          return null;
-        }
+          if (!quantities) {
+            return null;
+          }
 
-        /*
-         * Una prenda tiene frente + espalda.
-         * Sumamos cada lado por separado y
-         * tomamos el mayor, evitando contar
-         * dos veces la misma prenda.
-         */
-        const quantity = Math.max(quantities.front, quantities.back);
+          /*
+           * Una prenda tiene frente + espalda.
+           * Sumamos cada lado por separado y
+           * tomamos el mayor, evitando contar
+           * dos veces la misma prenda.
+           */
+          const quantity = Math.max(quantities.front, quantities.back);
 
-        return quantity > 0
-          ? {
-              size,
-              quantity,
-            }
-          : null;
-      }).filter(
-        (
-          item,
-        ): item is {
-          size: GarmentSize;
-          quantity: number;
-        } => item !== null,
-      ),
-    };
+          return quantity > 0
+            ? {
+                size,
+                quantity,
+              }
+            : null;
+        }).filter(
+          (
+            item,
+          ): item is {
+            size: GarmentSize;
+            quantity: number;
+          } => item !== null,
+        ),
+      };
     })
     .filter((entry) => entry.sizes.length > 0);
 }
@@ -258,8 +280,34 @@ function createEmptyDraft(): BatchPieceDraft {
 }
 
 interface PolygonPair {
+  readonly collisionComponents?: readonly Polygon[];
   readonly fastPolygon: Polygon;
   readonly finePolygon: Polygon;
+  readonly sourceAlphaBounds: AlphaPixelBounds;
+  readonly sourcePlacementBounds: AlphaPixelBounds;
+}
+
+function contourPixelBounds(polygon: Polygon): AlphaPixelBounds {
+  const bounds = getPolygonBounds(polygon);
+  const result = {
+    x: bounds.minX,
+    y: bounds.minY,
+    width: bounds.width,
+    height: bounds.height,
+  };
+
+  if (
+    !Number.isInteger(result.x) ||
+    !Number.isInteger(result.y) ||
+    !Number.isInteger(result.width) ||
+    !Number.isInteger(result.height) ||
+    result.width <= 0 ||
+    result.height <= 0
+  ) {
+    throw new Error('Bounds crudos de contorno inválidos.');
+  }
+
+  return result;
 }
 
 async function polygonsFromDefinition(
@@ -269,15 +317,16 @@ async function polygonsFromDefinition(
   let cacheKey: string | undefined;
 
   try {
-    cacheKey = await buildContourCacheKey(file, {
-      alphaThreshold: definition.alphaThreshold,
-      fastSimplificationPx: FAST_SIMPLIFICATION_PX,
-      fineSimplificationPx: FINE_SIMPLIFICATION_PX,
-      physicalWidthMm: definition.physicalWidthMm,
-      physicalHeightMm: definition.physicalHeightMm,
-    });
+    if (definition.kind !== 'free-png')
+      cacheKey = await buildContourCacheKey(file, {
+        alphaThreshold: definition.alphaThreshold,
+        fastSimplificationPx: FAST_SIMPLIFICATION_PX,
+        fineSimplificationPx: FINE_SIMPLIFICATION_PX,
+        physicalWidthMm: definition.physicalWidthMm,
+        physicalHeightMm: definition.physicalHeightMm,
+      });
 
-    const cached = await loadCachedContourPair(cacheKey);
+    const cached = cacheKey ? await loadCachedContourPair(cacheKey) : undefined;
 
     if (cached) {
       return cached;
@@ -311,6 +360,45 @@ async function polygonsFromDefinition(
       sourceCanvas.width,
       sourceCanvas.height,
     );
+    const sourceAlphaBounds = extractAlphaPixelBounds(
+      imageData,
+      definition.alphaThreshold,
+    );
+
+    if (!sourceAlphaBounds) {
+      throw new Error(
+        `No se pudo detectar contenido visible en ${definition.fileName}.`,
+      );
+    }
+
+    if (definition.kind === 'free-png') {
+      // Legacy cached pairs retain only the largest island. PNG collision uses
+      // every exterior alpha contour, with only exact collinear reduction.
+      const collisionComponents = extractAlphaComponents(
+        imageData,
+        definition.alphaThreshold,
+      ).map((p) =>
+        polygonPixelsToMillimeters(
+          p,
+          image.width,
+          image.height,
+          definition.physicalWidthMm,
+          definition.physicalHeightMm,
+        ),
+      );
+      if (!collisionComponents.length)
+        throw new Error(
+          `No se pudo detectar la silueta de ${definition.fileName}.`,
+        );
+      const envelope = componentEnvelope(collisionComponents);
+      return {
+        fastPolygon: envelope,
+        finePolygon: envelope,
+        collisionComponents,
+        sourceAlphaBounds,
+        sourcePlacementBounds: sourceAlphaBounds,
+      };
+    }
 
     const fastContour = extractLargestAlphaPolygon(
       imageData,
@@ -345,10 +433,15 @@ async function polygonsFromDefinition(
       definition.physicalWidthMm,
       definition.physicalHeightMm,
     );
+    const sourcePlacementBounds = contourPixelBounds(
+      fineContour.rawPolygon,
+    );
 
     const result: PolygonPair = {
       fastPolygon,
       finePolygon,
+      sourceAlphaBounds,
+      sourcePlacementBounds,
     };
 
     if (cacheKey) {
@@ -407,6 +500,9 @@ function validateDraft(draft: ProductionPieceDraft): string | null {
 }
 
 interface OptimizationDiagnostics {
+  readonly profileName: string;
+  readonly profileWidthMm: number;
+  readonly profileHeightMm: number;
   readonly engineProfiles: readonly {
     fabric: string;
     profile: NestingProfile;
@@ -419,6 +515,8 @@ interface OptimizationDiagnostics {
   readonly nestingRoundTripMs: number;
   readonly nestingWorkerMs: number;
   readonly nestingOverheadMs: number;
+  readonly requiredMs: number;
+  readonly fillerMs: number;
 
   readonly totalBeforePreflightMs: number;
 
@@ -435,17 +533,63 @@ interface OptimizationDiagnostics {
   readonly candidateCacheHits: number;
 }
 
+export type BatchOptimizationStatus =
+  | 'idle'
+  | 'running'
+  | 'completed'
+  | 'cancelled'
+  | 'error';
+
+export interface BatchOptimizationSummary {
+  readonly status: BatchOptimizationStatus;
+  readonly progress: number;
+  readonly phase: string;
+  readonly resultAvailable: boolean;
+  readonly error?: string;
+}
+
+const IDLE_OPTIMIZATION: BatchOptimizationSummary = {
+  status: 'idle',
+  progress: 0,
+  phase: 'Preparando',
+  resultAvailable: false,
+};
+
+export type BatchExportStatus =
+  | 'idle'
+  | 'running'
+  | 'completed'
+  | 'cancelled'
+  | 'error';
+
+export interface BatchExportSummary {
+  readonly status: BatchExportStatus;
+  readonly phase: string;
+  readonly error?: string;
+}
+
+const IDLE_EXPORT: BatchExportSummary = {
+  status: 'idle',
+  phase: 'Preparando exportación',
+};
+
 interface BatchPageProps {
   readonly templates: readonly SizeTemplateDraft[];
   readonly collections: readonly DesignCollection[];
+  readonly onOptimizationChange?: (state: BatchOptimizationSummary) => void;
+  readonly onExportChange?: (state: BatchExportSummary) => void;
 }
 
-export function BatchPage({ templates, collections }: BatchPageProps) {
+export function BatchPage({
+  templates,
+  collections,
+  onOptimizationChange,
+  onExportChange,
+}: BatchPageProps) {
   const [pieces, setPieces] = useState<BatchPieceDraft[]>([createEmptyDraft()]);
-  const [batchFabric, setBatchFabric] = useState<string>(DEFAULT_PRODUCTION_FABRIC);
+  const [batchFabric, setBatchFabric] = useState('set');
   const [freePngs, setFreePngs] = useState<FreePngDraft[]>([]);
   const fillActivationCounter = useRef(0);
-  const [freePngQuantity, setFreePngQuantity] = useState(1);
   const [isImportingPng, setIsImportingPng] = useState(false);
   const mounted = useRef(true);
 
@@ -471,6 +615,9 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
   const [mode, setMode] = useState<'imprenta' | 'calandra'>('imprenta');
   const [isExporting, setIsExporting] = useState(false);
   const [exportSucceeded, setExportSucceeded] = useState(false);
+  const [exportActivity, setExportActivity] =
+    useState<BatchExportSummary>(IDLE_EXPORT);
+  const [isResultStale, setIsResultStale] = useState(false);
   const [resetQuantitiesPending, setResetQuantitiesPending] = useState(false);
   const operation = useRef<AbortController | null>(null);
   const exportSuccessTimer = useRef<number | null>(null);
@@ -490,10 +637,11 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
     const nextReport = prepared
       ? usedTemplates === templates
         ? preflightBatch(prepared)
-        : {
+          : {
             errors: ['Cambió la calibración. Volvé a optimizar el batch.'],
             warnings: [],
             layouts: [],
+            boundsIssues: [],
           }
       : null;
 
@@ -503,11 +651,30 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
   }, [prepared, templates, usedTemplates]);
   const profile =
     mode === 'imprenta' ? DEFAULT_IMPRENTA_PROFILE : DEFAULT_CALANDRA_PROFILE;
+  const hasOptimizationResult =
+    prepared !== null && report !== null && results.length > 0;
+  const resultNeedsRefresh =
+    isResultStale || (hasOptimizationResult && usedTemplates !== templates);
   const optimizationReady =
+    !resultNeedsRefresh &&
     prepared !== null &&
     report !== null &&
     report.errors.length === 0 &&
     results.length > 0;
+  const selectedGarmentCount = useMemo(
+    () =>
+      collections.reduce(
+        (total, collection) =>
+          total +
+          GARMENT_SIZES.reduce(
+            (subtotal, size) =>
+              subtotal + (collectionQuantities[collection.id]?.[size] ?? 0),
+            0,
+          ),
+        0,
+      ),
+    [collectionQuantities, collections],
+  );
   useEffect(() => {
     const urls = ownedUrls.current;
     mounted.current = true;
@@ -519,14 +686,65 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
   }, []);
   const [status, setStatus] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
+  const [optimization, setOptimization] =
+    useState<BatchOptimizationSummary>(IDLE_OPTIMIZATION);
 
-  function invalidateFreePngResults(): void {
+  useEffect(() => {
+    onOptimizationChange?.(optimization);
+  }, [onOptimizationChange, optimization]);
+
+  useEffect(() => {
+    onExportChange?.(exportActivity);
+  }, [exportActivity, onExportChange]);
+
+  useEffect(() => {
+    if (
+      optimization.status === 'running' &&
+      !isOptimizing &&
+      prepared &&
+      report
+    ) {
+      if (report.errors.length > 0) {
+        const error = report.errors[0] ?? 'La validación del batch falló.';
+        setOptimization((current) => ({
+          ...current,
+          status: 'error',
+          phase: 'Error',
+          resultAvailable: false,
+          error,
+        }));
+      } else {
+        setOptimization({
+          status: 'completed',
+          progress: 100,
+          phase: 'Listo',
+          resultAvailable: true,
+        });
+      }
+    }
+  }, [isOptimizing, optimization.status, prepared, report]);
+
+  function updateOptimizationProgress(progress: number, phase: string): void {
+    setOptimization((current) =>
+      current.status === 'running'
+        ? {
+            ...current,
+            progress: Math.max(
+              current.progress,
+              Math.min(99, Math.max(0, Math.round(progress))),
+            ),
+            phase,
+          }
+        : current,
+    );
+  }
+
+  function markOptimizationStale(): void {
     operation.current?.abort();
-    setResults([]);
-    setPrepared(null);
     optimizationRunIdRef.current = null;
-    setUsedTemplates(null);
+    setIsResultStale(hasOptimizationResult);
     setExportSucceeded(false);
+    setExportActivity(IDLE_EXPORT);
     if (exportSuccessTimer.current !== null) {
       window.clearTimeout(exportSuccessTimer.current);
       exportSuccessTimer.current = null;
@@ -534,12 +752,17 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
     setOptimizationDiagnostics(null);
     setExportDiagnostics(null);
     setStatus(null);
+    setOptimization(IDLE_OPTIMIZATION);
+  }
+
+  function invalidateFreePngResults(): void {
+    markOptimizationStale();
   }
 
   async function importFreePng(): Promise<void> {
     setIsImportingPng(true);
     try {
-      const piece = await chooseFreePng(freePngQuantity);
+      const piece = await chooseFreePng(1);
       if (!piece) return;
       if (!mounted.current) {
         URL.revokeObjectURL(piece.imageUrl);
@@ -547,29 +770,41 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       }
       ownedUrls.current.add(piece.imageUrl);
       invalidateFreePngResults();
-      setFreePngs(current => [...current, piece]);
-      setFreePngQuantity(1);
+      setFreePngs((current) => [...current, piece]);
     } catch (error) {
-      if (mounted.current) setStatus(error instanceof Error ? error.message : 'No se pudo importar el PNG.');
+      if (mounted.current)
+        setStatus(
+          error instanceof Error
+            ? error.message
+            : 'No se pudo importar el PNG.',
+        );
     } finally {
       if (mounted.current) setIsImportingPng(false);
     }
   }
 
-  function updateFreePng(id: string, patch: Partial<Pick<FreePngDraft, 'quantity' | 'fabric'>>): void {
-    if (patch.quantity !== undefined && !validFreePngQuantity(patch.quantity)) return;
+  function updateFreePng(
+    id: string,
+    patch: Partial<Pick<FreePngDraft, 'quantity' | 'fabric'>>,
+  ): void {
+    if (patch.quantity !== undefined && !validFreePngQuantity(patch.quantity))
+      return;
     invalidateFreePngResults();
-    setFreePngs(current => current.map(piece => piece.id === id ? { ...piece, ...patch } : piece));
+    setFreePngs((current) =>
+      current.map((piece) =>
+        piece.id === id ? { ...piece, ...patch } : piece,
+      ),
+    );
   }
 
   function removeFreePng(id: string): void {
     invalidateFreePngResults();
-    const piece = freePngs.find(item => item.id === id);
+    const piece = freePngs.find((item) => item.id === id);
     if (piece) {
       URL.revokeObjectURL(piece.imageUrl);
       ownedUrls.current.delete(piece.imageUrl);
     }
-    setFreePngs(current => current.filter(piece => piece.id !== id));
+    setFreePngs((current) => current.filter((piece) => piece.id !== id));
   }
 
   function toggleFreePngFill(id: string): void {
@@ -596,14 +831,11 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       },
     }));
 
-    operation.current?.abort();
-    setResults([]);
-    setPrepared(null);
-    optimizationRunIdRef.current = null;
+    markOptimizationStale();
   }
 
   function updatePiece(id: string, patch: Partial<BatchPieceDraft>): void {
-    operation.current?.abort();
+    markOptimizationStale();
     setPieces((current) =>
       current.map((piece) =>
         piece.id === id
@@ -615,9 +847,6 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       ),
     );
 
-    setResults([]);
-    setPrepared(null);
-    optimizationRunIdRef.current = null;
   }
 
   function removePiece(id: string): void {
@@ -632,22 +861,12 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       return current.filter((item) => item.id !== id);
     });
 
-    setResults([]);
-    setPrepared(null);
-    optimizationRunIdRef.current = null;
+    markOptimizationStale();
   }
 
   function resetCollectionQuantities(): void {
-    operation.current?.abort();
-
+    markOptimizationStale();
     setCollectionQuantities({});
-    setResults([]);
-    setPrepared(null);
-    optimizationRunIdRef.current = null;
-    setUsedTemplates(null);
-    setOptimizationDiagnostics(null);
-    setExportDiagnostics(null);
-    setStatus(null);
 
     preflightElapsedMs.current = 0;
   }
@@ -659,9 +878,7 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       ...current,
       { ...piece, id: crypto.randomUUID(), imageUrl },
     ]);
-    setResults([]);
-    setPrepared(null);
-    optimizationRunIdRef.current = null;
+    markOptimizationStale();
   }
 
   function handleFileChange(id: string, file: File | undefined): void {
@@ -732,89 +949,129 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
 
   async function optimizeBatch(
     inputPieces: readonly BatchPieceDraft[] = pieces,
-    diagnosticContext?: {
+    diagnosticContext: {
       readonly runStartedAt: number;
       readonly collectionPreparationMs: number;
     },
+    controller: AbortController,
   ): Promise<void> {
-    const runStartedAt = diagnosticContext?.runStartedAt ?? performance.now();
-    const allInputPieces: readonly ProductionPieceDraft[] = [...inputPieces, ...freePngs];
+    const runStartedAt = diagnosticContext.runStartedAt;
+    const allInputPieces: readonly ProductionPieceDraft[] = [
+      ...inputPieces,
+      ...freePngs,
+    ];
 
     const collectionPreparationMs =
-      diagnosticContext?.collectionPreparationMs ?? 0;
+      diagnosticContext.collectionPreparationMs;
 
     setOptimizationDiagnostics(null);
     setExportDiagnostics(null);
     setStatus(null);
-    setResults([]);
-    setPrepared(null);
     optimizationRunIdRef.current = null;
+    setIsResultStale(hasOptimizationResult);
 
     for (const piece of allInputPieces) {
       const error = validateDraft(piece);
 
       if (error) {
         setStatus(error);
+        setOptimization({
+          status: 'error',
+          progress: 0,
+          phase: 'Error',
+          resultAvailable: false,
+          error,
+        });
+        setIsOptimizing(false);
+        if (operation.current === controller) operation.current = null;
         return;
       }
     }
 
     if (allInputPieces.reduce((n, p) => n + p.quantity, 0) > 1000) {
-      setStatus('Máximo 1000 piezas por batch en esta versión.');
+      const error = 'Máximo 1000 piezas por batch en esta versión.';
+      setStatus(error);
+      setOptimization({
+        status: 'error',
+        progress: 0,
+        phase: 'Error',
+        resultAvailable: false,
+        error,
+      });
+      setIsOptimizing(false);
+      if (operation.current === controller) operation.current = null;
       return;
     }
-    setIsOptimizing(true);
-    const controller = new AbortController();
-    operation.current = controller;
 
     try {
       const definitionsStartedAt = performance.now();
-      const definitions: BatchPieceDefinition[] = allInputPieces.map((piece) => {
-        if (
-          !piece.file ||
-          !piece.imageUrl ||
-          !piece.sourceWidthPx ||
-          !piece.sourceHeightPx
-        ) {
-          throw new Error('El batch contiene una pieza incompleta.');
-        }
+      const definitions: BatchPieceDefinition[] = allInputPieces.map(
+        (piece) => {
+          if (
+            !piece.file ||
+            !piece.imageUrl ||
+            !piece.sourceWidthPx ||
+            !piece.sourceHeightPx
+          ) {
+            throw new Error('El batch contiene una pieza incompleta.');
+          }
 
-        const template = piece.kind === 'garment' ? findTemplateForDraft(piece, templates) : undefined;
+          const template =
+            piece.kind === 'garment'
+              ? findTemplateForDraft(piece, templates)
+              : undefined;
 
-        const physicalSize = physicalSizeFromSourcePixels(
-          piece.sourceWidthPx,
-          piece.sourceHeightPx,
-        );
+          const physicalSize = physicalSizeFromSourcePixels(
+            piece.sourceWidthPx,
+            piece.sourceHeightPx,
+          );
 
-        return {
-          ...(piece.kind === 'garment'
-            ? { kind: 'garment' as const, model: piece.model.trim(), size: piece.size, side: piece.side }
-            : { kind: 'free-png' as const, ...(piece.fill ? { fill: piece.fill } : {}) }),
-          id: piece.id,
-          fabric: piece.fabric.trim(),
-          quantity: piece.quantity,
-          fileName: piece.file.name,
-          imageUrl: piece.imageUrl,
-          sourceWidthPx: piece.sourceWidthPx,
-          sourceHeightPx: piece.sourceHeightPx,
-          physicalWidthMm: mm(physicalSize.widthMm),
-          physicalHeightMm: mm(physicalSize.heightMm),
-          alphaThreshold: template?.alphaThreshold ?? DEFAULT_ALPHA_THRESHOLD,
-          simplificationTolerancePx: FAST_SIMPLIFICATION_PX,
-        };
-      });
+          return {
+            ...(piece.kind === 'garment'
+              ? {
+                  kind: 'garment' as const,
+                  model: piece.model.trim(),
+                  size: piece.size,
+                  side: piece.side,
+                }
+              : {
+                  kind: 'free-png' as const,
+                  ...(piece.fill ? { fill: piece.fill } : {}),
+                }),
+            id: piece.id,
+            fabric: piece.fabric.trim(),
+            quantity: piece.quantity,
+            fileName: piece.file.name,
+            imageUrl: piece.imageUrl,
+            sourceWidthPx: piece.sourceWidthPx,
+            sourceHeightPx: piece.sourceHeightPx,
+            physicalWidthMm: mm(physicalSize.widthMm),
+            physicalHeightMm: mm(physicalSize.heightMm),
+            alphaThreshold: template?.alphaThreshold ?? DEFAULT_ALPHA_THRESHOLD,
+            simplificationTolerancePx: FAST_SIMPLIFICATION_PX,
+          };
+        },
+      );
       const definitionBuildMs = performance.now() - definitionsStartedAt;
+      updateOptimizationProgress(2, 'Preparando');
       const contoursStartedAt = performance.now();
       const polygonByDefinitionId = new Map<string, Polygon>();
       const finePolygonByDefinitionId = new Map<string, Polygon>();
+      const componentsByDefinitionId = new Map<string, readonly Polygon[]>();
+      const sourceAlphaBoundsByDefinitionId = new Map<
+        string,
+        AlphaPixelBounds
+      >();
+      const sourcePlacementBoundsByDefinitionId = new Map<
+        string,
+        AlphaPixelBounds
+      >();
 
       const sourceFileByDefinitionId = new Map<string, File>();
 
       for (const piece of allInputPieces) {
         if (!piece.file) {
-          throw new Error(
-            `Falta el archivo fuente de la pieza ${piece.id}.`,
-          );
+          throw new Error(`Falta el archivo fuente de la pieza ${piece.id}.`);
         }
 
         sourceFileByDefinitionId.set(piece.id, piece.file);
@@ -829,26 +1086,44 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
           );
         }
 
-        const { fastPolygon, finePolygon } = await polygonsFromDefinition(
-          definition,
-          file,
-        );
+        const {
+          fastPolygon,
+          finePolygon,
+          collisionComponents,
+          sourceAlphaBounds,
+          sourcePlacementBounds,
+        } =
+          await polygonsFromDefinition(definition, file);
 
         polygonByDefinitionId.set(definition.id, fastPolygon);
 
         finePolygonByDefinitionId.set(definition.id, finePolygon);
+        sourceAlphaBoundsByDefinitionId.set(
+          definition.id,
+          sourceAlphaBounds,
+        );
+        sourcePlacementBoundsByDefinitionId.set(
+          definition.id,
+          sourcePlacementBounds,
+        );
+        if (collisionComponents)
+          componentsByDefinitionId.set(definition.id, collisionComponents);
       }
       const contourExtractionMs = performance.now() - contoursStartedAt;
+      updateOptimizationProgress(4, 'Preparando');
       const groupingStartedAt = performance.now();
       const instances = expandPieceDefinitions(definitions);
       const fabricGroups = groupPiecesByFabric(instances);
       const groupingMs = performance.now() - groupingStartedAt;
+      updateOptimizationProgress(5, 'Acomodando piezas');
 
       const nextResults: FabricBatchResult[] = [];
       const engineProfiles: { fabric: string; profile: NestingProfile }[] = [];
       let nestingRoundTripMs = 0;
       let nestingWorkerMs = 0;
       let nestingOverheadMs = 0;
+      let requiredMs = 0;
+      let fillerMs = 0;
 
       let candidatePlacementsTested = 0;
       let polygonTransforms = 0;
@@ -858,6 +1133,9 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       let layoutsCreated = 0;
       let candidateCacheHits = 0;
 
+      let completedRequiredBeforeGroup = 0;
+      const totalRequiredPieces = instances.length;
+
       for (const group of fabricGroups) {
         const fillers = fillersForInstances(group.pieces);
         const nestingPieces: MultiNestingPiece[] = group.pieces.map(
@@ -866,31 +1144,77 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
             const finePolygon = finePolygonByDefinitionId.get(
               instance.definitionId,
             );
+            const collisionComponents = componentsByDefinitionId.get(
+              instance.definitionId,
+            );
 
             if (!polygon || !finePolygon) {
               throw new Error(`No se encontró la geometría de ${instance.id}.`);
             }
 
             return {
-              ...(fillers.length ? { artworkSize: {
-                width: instance.definition.physicalWidthMm, height: instance.definition.physicalHeightMm,
-              } } : {}),
+              ...(fillers.length
+                ? {
+                    artworkSize: {
+                      width: instance.definition.physicalWidthMm,
+                      height: instance.definition.physicalHeightMm,
+                    },
+                  }
+                : {}),
               id: instance.id,
               kind: instance.definition.kind,
               polygon,
               finePolygon,
-              allowedRotations: getAllowedRotationsForPiece(instance.definition),
+              ...(collisionComponents ? { collisionComponents } : {}),
+              allowedRotations: getAllowedRotationsForPiece(
+                instance.definition,
+              ),
             };
           },
         );
 
         let workerTiming: NestingWorkerTiming | undefined;
+        const groupProgressStart =
+          5 + (90 * completedRequiredBeforeGroup) / totalRequiredPieces;
+        const groupProgressSpan =
+          (90 * group.pieces.length) / totalRequiredPieces;
+        const requiredProgressSpan = fillers.length
+          ? groupProgressSpan * (70 / 90)
+          : groupProgressSpan;
+        const fillerProgressSpan = groupProgressSpan - requiredProgressSpan;
+        const reportWorkerProgress = (progress: NestingProgress) => {
+          if (progress.phase === 'preparing') {
+            updateOptimizationProgress(
+              groupProgressStart,
+              'Acomodando piezas',
+            );
+          } else if (progress.phase === 'required') {
+            updateOptimizationProgress(
+              groupProgressStart +
+                requiredProgressSpan * (progress.completed / progress.total),
+              'Acomodando piezas',
+            );
+          } else if (progress.phase === 'fillers') {
+            updateOptimizationProgress(
+              groupProgressStart +
+                requiredProgressSpan +
+                fillerProgressSpan * (progress.completed / progress.total),
+              'Completando espacios',
+            );
+          } else {
+            updateOptimizationProgress(
+              groupProgressStart + groupProgressSpan,
+              'Validando',
+            );
+          }
+        };
 
         const startedAt = performance.now();
 
         const result = await nestInWorker(
           {
             pieces: nestingPieces,
+            diagnosticPhaseTiming: true,
             ...(fillers.length ? { fillers } : {}),
             canvas: {
               width: profile.maxWidth,
@@ -902,7 +1226,9 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
           (timing) => {
             workerTiming = timing;
           },
+          reportWorkerProgress,
         );
+        completedRequiredBeforeGroup += group.pieces.length;
 
         const elapsedMs = performance.now() - startedAt;
         if (workerTiming) {
@@ -921,6 +1247,9 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
           });
 
         if (engineDiagnostics) {
+          requiredMs += engineDiagnostics.requiredMs;
+          fillerMs += engineDiagnostics.fillerMs;
+
           candidatePlacementsTested +=
             engineDiagnostics.candidatePlacementsTested;
 
@@ -947,9 +1276,13 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       }
 
       controller.signal.throwIfAborted();
+      updateOptimizationProgress(96, 'Validando');
       const nextPrepared: PreparedBatch = {
         definitions,
         polygons: polygonByDefinitionId,
+        collisionPolygons: finePolygonByDefinitionId,
+        sourceAlphaBounds: sourceAlphaBoundsByDefinitionId,
+        sourcePlacementBounds: sourcePlacementBoundsByDefinitionId,
         results: nextResults,
         profile,
       };
@@ -959,8 +1292,12 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       setPrepared(nextPrepared);
       setUsedTemplates(templates);
       setResults(nextResults);
+      setIsResultStale(false);
       setStatus(null);
       setOptimizationDiagnostics({
+        profileName: profile.name,
+        profileWidthMm: profile.maxWidth,
+        profileHeightMm: profile.maxHeight,
         engineProfiles,
         collectionPreparationMs,
         definitionBuildMs,
@@ -970,6 +1307,8 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
         nestingRoundTripMs,
         nestingWorkerMs,
         nestingOverheadMs,
+        requiredMs,
+        fillerMs,
 
         totalBeforePreflightMs: performance.now() - runStartedAt,
 
@@ -986,17 +1325,28 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
         candidateCacheHits,
       });
     } catch (error) {
-      setStatus(
+      const message =
         error instanceof Error
           ? error.message
-          : 'Ocurrió un error al optimizar el batch.',
-      );
+          : 'Ocurrió un error al optimizar el batch.';
+      const cancelled = controller.signal.aborted;
+      setStatus(message);
+      setOptimization((current) => ({
+        status: cancelled ? 'cancelled' : 'error',
+        progress: current.progress,
+        phase: cancelled ? 'Cancelado' : 'Error',
+        resultAvailable: false,
+        ...(cancelled ? {} : { error: message }),
+      }));
     } finally {
       setIsOptimizing(false);
+      if (operation.current === controller) operation.current = null;
     }
   }
 
   async function optimizeCollections(): Promise<void> {
+    if (isOptimizing || operation.current) return;
+
     const runStartedAt = performance.now();
 
     setOptimizationDiagnostics(null);
@@ -1008,12 +1358,22 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       return;
     }
 
+    const controller = new AbortController();
+    operation.current = controller;
+    setIsOptimizing(true);
+    setOptimization({
+      status: 'running',
+      progress: 0,
+      phase: 'Preparando',
+      resultAvailable: false,
+    });
+
     const generatedPieces: BatchPieceDraft[] = [];
 
     try {
       for (const collection of collections) {
         for (const size of GARMENT_SIZES) {
-          const quantity = collectionQuantities[collection.id]?.[size] ?? 0;
+            const quantity = collectionQuantities[collection.id]?.[size] ?? 0;
 
           if (quantity <= 0) {
             continue;
@@ -1023,8 +1383,9 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
             throw new Error(`Cantidad inválida en ${collection.name} ${size}.`);
           }
 
-          for (const side of PIECE_SIDES) {
-            const asset = findCollectionAsset(collection, size, side);
+            for (const side of PIECE_SIDES) {
+              controller.signal.throwIfAborted();
+              const asset = findCollectionAsset(collection, size, side);
 
             if (!asset) {
               throw new Error(
@@ -1065,9 +1426,9 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
       }
 
       if (generatedPieces.length === 0 && freePngs.length === 0) {
-        setStatus('Ingresá al menos una cantidad mayor que cero.');
-        return;
+        throw new Error('Ingresá al menos una cantidad mayor que cero.');
       }
+      controller.signal.throwIfAborted();
 
       /*
        * Liberamos URLs del batch anterior antes de sustituirlo.
@@ -1083,10 +1444,14 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
 
       const collectionPreparationMs = performance.now() - runStartedAt;
 
-      await optimizeBatch(generatedPieces, {
-        runStartedAt,
-        collectionPreparationMs,
-      });
+      await optimizeBatch(
+        generatedPieces,
+        {
+          runStartedAt,
+          collectionPreparationMs,
+        },
+        controller,
+      );
     } catch (error) {
       for (const piece of generatedPieces) {
         if (piece.imageUrl) {
@@ -1095,11 +1460,19 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
         }
       }
 
-      setStatus(
-        error instanceof Error
-          ? error.message
-          : 'No se pudo preparar el batch.',
-      );
+      const message =
+        error instanceof Error ? error.message : 'No se pudo preparar el batch.';
+      const cancelled = controller.signal.aborted;
+      setStatus(message);
+      setOptimization((current) => ({
+        status: cancelled ? 'cancelled' : 'error',
+        progress: current.progress,
+        phase: cancelled ? 'Cancelado' : 'Error',
+        resultAvailable: false,
+        ...(cancelled ? {} : { error: message }),
+      }));
+      setIsOptimizing(false);
+      if (operation.current === controller) operation.current = null;
     }
   }
 
@@ -1117,6 +1490,10 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
     setExportSucceeded(false);
     setIsExporting(true);
     setStatus('Preparando exportación PDF…');
+    setExportActivity({
+      status: 'running',
+      phase: 'Exportando archivos',
+    });
 
     const controller = new AbortController();
 
@@ -1137,6 +1514,10 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
          */
         setStatus(null);
         setExportSucceeded(true);
+        setExportActivity({
+          status: 'completed',
+          phase: 'Exportación terminada',
+        });
 
         const historyReport = preflightBatch(prepared);
         if (optimizationRunIdRef.current && historyReport.errors.length === 0) {
@@ -1154,10 +1535,11 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
             ),
             fabrics: prepared.results.map((result) => ({
               fabric: result.fabric,
-              meters: result.layouts.reduce(
-                (total, layout) => total + layout.usedHeight,
-                0,
-              ) / 1000,
+              meters:
+                result.layouts.reduce(
+                  (total, layout) => total + layout.usedHeight,
+                  0,
+                ) / 1000,
             })),
             files: previewFiles,
             sizeSummary: buildHistoricalSizeSummary(prepared.definitions),
@@ -1171,14 +1553,26 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
 
         exportSuccessTimer.current = window.setTimeout(() => {
           setExportSucceeded(false);
+          setExportActivity(IDLE_EXPORT);
 
           exportSuccessTimer.current = null;
         }, 10_000);
       } else {
         setStatus('Exportación cancelada; no se guardaron archivos.');
+        setExportActivity({
+          status: 'cancelled',
+          phase: 'Exportación cancelada',
+        });
       }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      const cancelled = controller.signal.aborted;
+      setStatus(message);
+      setExportActivity({
+        status: cancelled ? 'cancelled' : 'error',
+        phase: cancelled ? 'Exportación cancelada' : 'Error al exportar',
+        ...(cancelled ? {} : { error: message }),
+      });
     } finally {
       setIsExporting(false);
 
@@ -1194,67 +1588,74 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
         disabled={isOptimizing || isExporting || isImportingPng}
         style={{ border: 0, padding: 0, margin: 0 }}
       >
-        <div className="page-header">
-          <div>
+        <header className="production-header">
+          <div className="production-title">
+            <p className="page-kicker">NUEVO BATCH</p>
             <h1>Producción</h1>
-            <p className="muted">
-              Elegí los diseños importados y la cantidad de prendas de cada
-              talle.
-            </p>
+            <p>Elegí diseños, definí cantidades y prepará el layout final.</p>
           </div>
-        </div>
-
-        <div className="segmented-toggle" aria-label="Perfil de salida">
-          {(['imprenta', 'calandra'] as const).map((option) => (
+          <div className="production-context">
+            <label className="production-fabric-field">
+              <span>TELA DEL BATCH</span>
+              <input
+                type="text"
+                aria-label="Tipo de tela para todo el batch"
+                value={batchFabric}
+                placeholder="set"
+                spellCheck={false}
+                autoCorrect="off"
+                autoCapitalize="none"
+                onChange={(event) => {
+                  setBatchFabric(event.target.value);
+                  markOptimizationStale();
+                }}
+              />
+            </label>
+            <div className="segmented-toggle" aria-label="Perfil de salida">
+              {(['imprenta', 'calandra'] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={mode === option ? 'selected' : ''}
+                  onClick={() => {
+                    if (option === mode) return;
+                    operation.current?.abort();
+                    if (exportSuccessTimer.current !== null) {
+                      window.clearTimeout(exportSuccessTimer.current);
+                    }
+                    setMode(option);
+                    markOptimizationStale();
+                    preflightElapsedMs.current = 0;
+                  }}
+                >
+                  {option === 'imprenta' ? 'Imprenta' : 'Calandra'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="production-command">
+            <p className="batch-selection-summary">
+              {selectedGarmentCount} prendas seleccionadas · cada prenda genera
+              automáticamente un frente y un dorso.
+            </p>
             <button
-              key={option}
+              className="batch-primary-button production-primary-action"
               type="button"
-              className={mode === option ? 'selected' : ''}
-              onClick={() => {
-                if (option === mode) {
-                  return;
-                }
-
-                operation.current?.abort();
-
-                if (exportSuccessTimer.current !== null) {
-                  window.clearTimeout(exportSuccessTimer.current);
-                }
-
-                setMode(option);
-                setResults([]);
-                setPrepared(null);
-                optimizationRunIdRef.current = null;
-                setUsedTemplates(null);
-                setOptimizationDiagnostics(null);
-                setExportDiagnostics(null);
-                setStatus(null);
-
-                preflightElapsedMs.current = 0;
-              }}
+              disabled={isOptimizing}
+              onClick={() => void optimizeCollections()}
             >
-              {option === 'imprenta' ? 'IMPRENTA' : 'CALANDRA'}
+              {isOptimizing ? 'OPTIMIZANDO…' : 'Optimizar batch'}
+              <span aria-hidden="true">→</span>
             </button>
-          ))}
-        </div>
-        <div className="collection-batch-settings">
-          <label className="field">
-            <span>Tipo de tela para todo el batch</span>
-            <input
-              type="text"
-              value={batchFabric}
-              placeholder="deportiva"
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="none"
-              onChange={(event) => {
-                setBatchFabric(event.target.value);
-                setResults([]);
-                setPrepared(null);
-                optimizationRunIdRef.current = null;
-              }}
-            />
-          </label>
+          </div>
+        </header>
+
+        <div className="batch-section-heading">
+          <span>01</span>
+          <div>
+            <h2>Batch</h2>
+            <p>Diseños requeridos y cantidades por talle.</p>
+          </div>
         </div>
 
         <section className="collection-batch-browser">
@@ -1272,11 +1673,12 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
             ) : null}
           </div>
 
-          {collections.length === 0 ? (
-            <p className="helper-text">
-              No hay diseños importados. Agregalos primero desde la Biblioteca
-              de siluetas.
-            </p>
+          {collections.length === 0 && freePngs.length === 0 ? (
+            <div className="empty-state production-empty">
+              <span className="status-badge">PENDIENTE</span>
+              <h2>No hay piezas en el batch</h2>
+              <p>Elegí un diseño o agregá un PNG para empezar.</p>
+            </div>
           ) : (
             <div className="collection-batch-grid">
               {[...collections]
@@ -1371,6 +1773,9 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
                                 disabled={!complete}
                                 value={quantity}
                                 aria-label={`Cantidad ${size}`}
+                                onDoubleClick={(event) =>
+                                  event.currentTarget.select()
+                                }
                                 onChange={(event) =>
                                   updateCollectionQuantity(
                                     collection.id,
@@ -1405,20 +1810,16 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
             </div>
           )}
         </section>
-        <p>
-          {collections.reduce(
-            (total, collection) =>
-              total +
-              GARMENT_SIZES.reduce(
-                (subtotal, size) =>
-                  subtotal + (collectionQuantities[collection.id]?.[size] ?? 0),
-                0,
-              ),
-            0,
-          )}{' '}
-          prendas seleccionadas · cada prenda genera automáticamente un frente y
-          un dorso.
-        </p>
+
+        <FreePngPanel
+          pieces={freePngs}
+          onImport={() => void importFreePng()}
+          onUpdate={updateFreePng}
+          onRemove={removeFreePng}
+          onToggleFill={toggleFreePngFill}
+          extras={optimizationReady ? extraCounts(results) : undefined}
+        />
+
         {resetQuantitiesPending ? (
           <div
             className="confirm-backdrop"
@@ -1605,39 +2006,34 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
           </div>
         </details>
 
-        <FreePngPanel pieces={freePngs} quantity={freePngQuantity}
-          onQuantity={setFreePngQuantity} onImport={() => void importFreePng()}
-          onUpdate={updateFreePng} onRemove={removeFreePng}
-          onToggleFill={toggleFreePngFill} extras={optimizationReady ? extraCounts(results) : undefined} />
-
-        <div className="batch-production-flow">
-          <div className="batch-actions">
-            <button
-              className={[
-                'batch-primary-button',
-                isOptimizing ? 'is-loading' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              type="button"
-              disabled={isOptimizing}
-              onClick={() => void optimizeCollections()}
-            >
-              {isOptimizing ? 'OPTIMIZANDO...' : 'OPTIMIZAR BATCH'}
-            </button>
-          </div>
-        </div>
       </fieldset>
 
       <div className="batch-production-flow batch-production-flow-after">
         {isOptimizing ? (
-          <button
-            type="button"
-            className="cancel-operation-button"
-            onClick={() => operation.current?.abort()}
-          >
-            CANCELAR OPERACIÓN
-          </button>
+          <section className="batch-optimization-progress" aria-live="polite">
+            <div className="batch-optimization-progress-heading">
+              <span>OPTIMIZANDO</span>
+              <strong>{optimization.progress}%</strong>
+            </div>
+            <div
+              className="optimization-progress-track"
+              role="progressbar"
+              aria-label="Progreso de optimización"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={optimization.progress}
+            >
+              <span style={{ width: `${optimization.progress}%` }} />
+            </div>
+            <p>{optimization.phase}</p>
+            <button
+              type="button"
+              className="cancel-operation-button"
+              onClick={() => operation.current?.abort()}
+            >
+              Cancelar
+            </button>
+          </section>
         ) : null}
 
         {status && !isExporting ? (
@@ -1646,63 +2042,81 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
           </p>
         ) : null}
 
-        {optimizationReady && report ? (
-          <>
-            <div className="batch-flow-arrow" aria-hidden="true">
-              ↓
-            </div>
-
-            <p className="batch-flow-message">BATCH OPTIMIZADO CORRECTAMENTE</p>
-
-            <div className="batch-flow-arrow" aria-hidden="true">
-              ↓
+        {hasOptimizationResult && !resultNeedsRefresh && report ? (
+          <section
+            className="batch-result-dashboard is-ready"
+            aria-label="Resultado de optimización"
+          >
+            <div className="batch-result-heading">
+              <div>
+                <h2>Resultado del batch</h2>
+              </div>
             </div>
 
             {results.length > 0 ? (
               <div className="batch-production-summary">
                 <div className="batch-production-summary-list">
-                  {results.map((result) => (
-                    <section
-                      key={result.fabric}
-                      className="batch-production-summary-card"
-                    >
-                      <p className="batch-production-summary-fabric">
-                        {result.fabric.charAt(0).toUpperCase() +
-                          result.fabric.slice(1)}
-                      </p>
+                  {results.map((result) => {
+                        const placement = summarizeProductionPlacement(
+                          prepared?.definitions ?? [],
+                          result,
+                        );
 
-                      <p className="batch-production-summary-metrics">
-                        {result.layouts.length} canvas ·{' '}
-                        {formatMeters(
-                          result.layouts.reduce(
-                            (total, layout) => total + layout.usedHeight,
-                            0,
-                          ),
-                        )}{' '}
-                        metros · {(result.elapsedMs / 1000).toFixed(2)} s
-                      </p>
-
-                      {result.unplacedPieceIds.length > 0 ? (
-                        <p className="batch-production-summary-warning">
-                          {result.unplacedPieceIds.length} piezas sin
-                          colocar
-                        </p>
-                      ) : (
-                        <p className="batch-production-summary-ok">
-                          Todas las piezas colocadas
-                        </p>
-                      )}
-                    </section>
-                  ))}
+                        return <section
+                          key={result.fabric}
+                          className="batch-production-summary-card"
+                        >
+                          <h3 className="batch-production-summary-fabric">
+                            {result.fabric.charAt(0).toUpperCase() +
+                              result.fabric.slice(1)}
+                          </h3>
+                          <div className="batch-metrics">
+                            <div><strong>{result.layouts.length}</strong><span>CANVAS</span></div>
+                            <div><strong>{formatMeters(result.layouts.reduce((total, layout) => total + layout.usedHeight, 0))} m</strong><span>METROS</span></div>
+                            <div><strong>{placement.placedGarments}/{placement.totalGarments}</strong><span>PRENDAS</span></div>
+                            <div><strong>{(result.elapsedMs / 1000).toFixed(2)} s</strong><span>TIEMPO</span></div>
+                          </div>
+                          <p
+                            className={
+                              placement.complete
+                                ? 'batch-production-summary-ok'
+                                : 'batch-production-summary-warning'
+                            }
+                          >
+                            {placement.placedGarments}/{placement.totalGarments}{' '}
+                            prendas colocadas
+                            {placement.totalRequiredPngs > 0
+                              ? ` · ${placement.placedRequiredPngs}/${placement.totalRequiredPngs} PNG requeridos colocados`
+                              : ''}
+                          </p>
+                        </section>;
+                  })}
                 </div>
               </div>
             ) : null}
 
-            <div className="batch-flow-arrow" aria-hidden="true">
-              ↓
-            </div>
+            {!optimizationReady && report.errors.length > 0 ? (
+              <section
+                className="batch-preflight-blocked"
+                aria-label="Exportación bloqueada"
+                role="alert"
+              >
+                <h3>No se puede preparar la exportación</h3>
+                <ul>
+                  {report.errors.slice(0, 3).map((error) => (
+                    <li key={error}>{error}</li>
+                  ))}
+                </ul>
+                {report.errors.length > 3 ? (
+                  <p>
+                    + {report.errors.length - 3}{' '}
+                    {report.errors.length - 3 === 1 ? 'error más' : 'errores más'}
+                  </p>
+                ) : null}
+              </section>
+            ) : null}
 
-            <div className="batch-export-step">
+            {optimizationReady ? <div className="batch-export-step">
               <BatchExportPanel
                 report={report}
                 busy={isOptimizing || isExporting}
@@ -1712,8 +2126,8 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
                 onExport={() => void exportPdf()}
                 onCancel={() => operation.current?.abort()}
               />
-            </div>
-          </>
+            </div> : null}
+          </section>
         ) : null}
       </div>
 
@@ -1726,7 +2140,9 @@ export function BatchPage({ templates, collections }: BatchPageProps) {
               <strong>OPTIMIZACIÓN</strong>
 
               <pre>
-                {`Preparación colecciones ..... ${optimizationDiagnostics.collectionPreparationMs.toFixed(2)} ms
+                {`Perfil ....................... ${optimizationDiagnostics.profileName} ${optimizationDiagnostics.profileWidthMm}×${optimizationDiagnostics.profileHeightMm} mm
+
+Preparación colecciones ..... ${optimizationDiagnostics.collectionPreparationMs.toFixed(2)} ms
 Construcción definiciones .... ${optimizationDiagnostics.definitionBuildMs.toFixed(2)} ms
 Extracción contornos ......... ${optimizationDiagnostics.contourExtractionMs.toFixed(2)} ms
 Expansión / agrupación ....... ${optimizationDiagnostics.groupingMs.toFixed(2)} ms
@@ -1734,6 +2150,8 @@ Expansión / agrupación ....... ${optimizationDiagnostics.groupingMs.toFixed(2)
 Worker round-trip ............ ${optimizationDiagnostics.nestingRoundTripMs.toFixed(2)} ms
 Worker cálculo puro .......... ${optimizationDiagnostics.nestingWorkerMs.toFixed(2)} ms
 Worker overhead .............. ${optimizationDiagnostics.nestingOverheadMs.toFixed(2)} ms
+Required nesting ............. ${optimizationDiagnostics.requiredMs.toFixed(2)} ms
+Fillers ...................... ${optimizationDiagnostics.fillerMs.toFixed(2)} ms
 
 Preflight .................... ${preflightElapsedMs.current.toFixed(2)} ms
 Total antes de preflight ..... ${optimizationDiagnostics.totalBeforePreflightMs.toFixed(2)} ms

@@ -8,9 +8,11 @@ self.onmessage = (event: MessageEvent<MultiNestingInput>) => {
 
   try {
     const result = nestMultiplePieces({
-  ...event.data,
-  diagnosticProfiling: event.data.diagnosticProfiling ?? false,
-});
+      ...event.data,
+      diagnosticProfiling: event.data.diagnosticProfiling ?? false,
+    }, (progress) => {
+      self.postMessage({ progress });
+    });
 
     self.postMessage({
       result,

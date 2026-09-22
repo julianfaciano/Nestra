@@ -42,3 +42,16 @@ Desktop.ini
 *~
 /diagnostics/batch-real-*.json
 /src-tauri/png-bench/forensic-report/
+
+# Local performance/benchmark captures
+/after-200-calandra.json
+/audit-200-calandra.json
+/audit-200-imprenta.json
+/baseline-200-calandra.json
+/failed-version-after-200-calandra.json
+/failed-version-after-200-imprenta.json
+/failed-version-after-520-calandra.json
+/failed-version-after-520-imprenta.json
+/failed-version-before-200-calandra.json
+/perf-audit.jsonl
+/profile-200-imprenta.json

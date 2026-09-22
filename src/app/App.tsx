@@ -18,13 +18,33 @@ import { AlphaContourPreview } from './alpha-contour-preview';
 import type { SizeTemplateDraft } from './size-template-state';
 import { GeometryPlayground } from './geometry-playground';
 import { NestingPreview } from './nesting-preview';
-import { BatchPage } from './batch-page';
+import {
+  BatchPage,
+  type BatchExportSummary,
+  type BatchOptimizationSummary,
+} from './batch-page';
 import { physicalSizeFromSourcePixels } from '../domain/source-image-size';
 import { DesignCollectionLibrary } from './design-collection-library';
 import type { DesignCollection } from './design-collection-state';
 import { HistoricalJobs } from './historical-jobs';
 
 type View = 'home' | 'templates' | 'batch' | 'jobs';
+const SIDEBAR_SESSION_KEY = 'nestra:sidebar-collapsed';
+
+function NavIcon({ view }: { readonly view: View }) {
+  const paths: Record<View, React.ReactNode> = {
+    home: <><path d="M4 10.5 10 5l6 5.5" /><path d="M6.5 9.5V16h7V9.5" /></>,
+    jobs: <><path d="M5 4.5h10v11H5z" /><path d="M7.5 8h5M7.5 11h5" /></>,
+    templates: <><rect x="4" y="4" width="5" height="5" rx="1" /><rect x="11" y="4" width="5" height="5" rx="1" /><rect x="4" y="11" width="5" height="5" rx="1" /><rect x="11" y="11" width="5" height="5" rx="1" /></>,
+    batch: <><path d="M4 6h12M4 10h12M4 14h8" /><circle cx="15" cy="14" r="1" /></>,
+  };
+
+  return (
+    <svg className="nav-icon" viewBox="0 0 20 20" aria-hidden="true">
+      {paths[view]}
+    </svg>
+  );
+}
 
 function GlobalSearch() {
   const [open, setOpen] = useState(false);
@@ -290,7 +310,7 @@ function CompactLibrary({
     <section className="library-page">
       <div className="page-header">
         <div>
-          <h1>Biblioteca de diseños</h1>
+          <h1>Biblioteca</h1>
         </div>
         <span className="template-progress">
           {collections.length}{' '}
@@ -314,6 +334,24 @@ interface SelectedSlot {
 
 export default function App() {
   const [view, setView] = useState<View>('home');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.sessionStorage.getItem(SIDEBAR_SESSION_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [batchOptimization, setBatchOptimization] =
+    useState<BatchOptimizationSummary>({
+      status: 'idle',
+      progress: 0,
+      phase: 'Preparando',
+      resultAvailable: false,
+    });
+  const [batchExport, setBatchExport] = useState<BatchExportSummary>({
+    status: 'idle',
+    phase: 'Preparando exportación',
+  });
 
   const [showSplash, setShowSplash] = useState(true);
 
@@ -355,6 +393,17 @@ export default function App() {
       window.clearTimeout(hideTimer);
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        SIDEBAR_SESSION_KEY,
+        String(sidebarCollapsed),
+      );
+    } catch {
+      // El layout puede seguir funcionando sin almacenamiento de sesión.
+    }
+  }, [sidebarCollapsed]);
 
   const selectedTemplate = useMemo(
     () =>
@@ -512,43 +561,150 @@ export default function App() {
   const contentClass = showSplash
     ? 'app-content'
     : 'app-content app-content--visible';
+  const visibleActivity =
+    batchExport.status === 'running' ||
+    batchExport.status === 'completed' ||
+    batchExport.status === 'error'
+      ? { kind: 'export' as const, state: batchExport }
+      : batchOptimization.status === 'running' ||
+          batchOptimization.status === 'completed' ||
+          batchOptimization.status === 'error'
+        ? { kind: 'optimization' as const, state: batchOptimization }
+        : null;
 
-  if (view === 'templates') {
-    return (
-      <div className="app-shell">
-        {splash}
-        <div className={contentClass}>
-        <aside className="sidebar">
-          <div className="brand">
-            <img
-              className="brand-mark"
-              src={nestraLogo}
-              alt=""
-              aria-hidden="true"
-            />
+  return (
+    <div
+      className={[
+        'app-shell',
+        sidebarCollapsed ? 'app-shell--sidebar-collapsed' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      {splash}
+      <div className={contentClass}>
+      <aside
+        className={[
+          'sidebar',
+          sidebarCollapsed ? 'sidebar--collapsed' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <div className="brand">
+          <img
+            className="brand-mark"
+            src={nestraLogo}
+            alt=""
+            aria-hidden="true"
+          />
 
-            <img className="brand-wordmark" src={nestraWordmark} alt="Nestra" />
-          </div>
-          <nav className="nav">
-            <button className="nav-item" onClick={() => setView('home')}>
-              INICIO
-            </button>
-            <button className="nav-item" onClick={() => setView('jobs')}>
-              HISTORIAL
-            </button>
+          <img className="brand-wordmark" src={nestraWordmark} alt="Nestra" />
+          <button
+            type="button"
+            className="sidebar-toggle"
+            aria-label={
+              sidebarCollapsed ? 'Mostrar barra lateral' : 'Ocultar barra lateral'
+            }
+            aria-expanded={!sidebarCollapsed}
+            title={
+              sidebarCollapsed ? 'Mostrar barra lateral' : 'Ocultar barra lateral'
+            }
+            onClick={() => setSidebarCollapsed((current) => !current)}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d={sidebarCollapsed ? 'm6.5 4 4 4-4 4' : 'm9.5 4-4 4 4 4'}
+              />
+            </svg>
+          </button>
+        </div>
+
+        <nav className="nav" aria-label="Navegación principal">
+          {([
+            ['home', 'Inicio'],
+            ['jobs', 'Historial'],
+            ['templates', 'Biblioteca'],
+            ['batch', 'Producción'],
+          ] as const).map(([nextView, label]) => (
             <button
-              className="nav-item active"
-              onClick={() => setView('templates')}
+              key={nextView}
+              className={view === nextView ? 'nav-item active' : 'nav-item'}
+              aria-label={label}
+              title={sidebarCollapsed ? label : undefined}
+              onClick={() => setView(nextView)}
             >
-              BIBLIOTECA
+              <NavIcon view={nextView} />
+              <span className="nav-label">{label}</span>
             </button>
-            <button className="nav-item" onClick={() => setView('batch')}>
-              PRODUCCIÓN
-            </button>
-          </nav>
-        </aside>
-        <main className="main-content">
-          <GlobalSearch />
+          ))}
+        </nav>
+        {view !== 'batch' && visibleActivity ? (
+          <button
+            type="button"
+            className={[
+              'sidebar-optimization-card',
+              `sidebar-optimization-card--${visibleActivity.state.status}`,
+              `sidebar-optimization-card--${visibleActivity.kind}`,
+            ].join(' ')}
+            onClick={() => setView('batch')}
+          >
+            <span className="sidebar-optimization-label">
+              {visibleActivity.kind === 'export'
+                ? visibleActivity.state.status === 'running'
+                  ? 'EXPORTANDO'
+                  : visibleActivity.state.status === 'error'
+                    ? 'ERROR'
+                    : 'EXPORTADO'
+                : visibleActivity.state.status === 'running'
+                  ? 'OPTIMIZANDO'
+                  : visibleActivity.state.status === 'error'
+                    ? 'ERROR'
+                    : 'LISTO'}
+            </span>
+            {visibleActivity.kind === 'optimization' ? (
+              <>
+                <strong>{visibleActivity.state.progress}%</strong>
+                <span
+                  className="optimization-progress-track"
+                  role="progressbar"
+                  aria-label="Progreso de optimización"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={visibleActivity.state.progress}
+                >
+                  <span style={{ width: `${visibleActivity.state.progress}%` }} />
+                </span>
+              </>
+            ) : visibleActivity.state.status === 'running' ? (
+              <span className="sidebar-activity-indeterminate" aria-hidden="true" />
+            ) : (
+              <strong aria-hidden="true">
+                {visibleActivity.state.status === 'error' ? '!' : '✓'}
+              </strong>
+            )}
+            <span className="sidebar-optimization-phase">
+              {visibleActivity.state.status === 'completed'
+                ? visibleActivity.kind === 'export'
+                  ? 'Exportación terminada'
+                  : 'Ver resultado'
+                : visibleActivity.state.phase}
+            </span>
+          </button>
+        ) : null}
+      </aside>
+
+      <main className="main-content">
+        <GlobalSearch />
+        <div hidden={view !== 'batch'}>
+          <BatchPage
+            templates={templates}
+            collections={collections}
+            onOptimizationChange={setBatchOptimization}
+            onExportChange={setBatchExport}
+          />
+        </div>
+        {view === 'templates' ? (
           <CompactLibrary
             collections={collections}
             onImport={importDesignCollection}
@@ -561,72 +717,61 @@ export default function App() {
               )
             }
           />
-        </main>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="app-shell">
-      {splash}
-      <div className={contentClass}>
-      <aside className="sidebar">
-        <div className="brand">
-          <img
-            className="brand-mark"
-            src={nestraLogo}
-            alt=""
-            aria-hidden="true"
-          />
-
-          <img className="brand-wordmark" src={nestraWordmark} alt="Nestra" />
-        </div>
-
-        <nav className="nav">
-          <button
-            className={view === 'home' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('home')}
-          >
-            INICIO
-          </button>
-
-          <button
-            className={view === 'jobs' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('jobs')}
-          >
-            HISTORIAL
-          </button>
-          <button
-            className={
-              (view as View) === 'templates' ? 'nav-item active' : 'nav-item'
-            }
-            onClick={() => setView('templates')}
-          >
-            BIBLIOTECA
-          </button>
-          <button
-            className={view === 'batch' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('batch')}
-          >
-            PRODUCCIÓN
-          </button>
-        </nav>
-      </aside>
-
-      <main className="main-content">
-        <GlobalSearch />
-        <div hidden={view !== 'batch'}>
-          <BatchPage templates={templates} collections={collections} />
-        </div>
-        {view === 'jobs' ? (
+        ) : view === 'jobs' ? (
           <HistoricalJobs />
         ) : view === 'home' ? (
-          <section>
-            <h1>Nestra</h1>
-            <p className="muted">
-              Prepará y optimizá layouts textiles para producción.
-            </p>
+          <section className="home-page">
+            <div className="home-identity">
+              <p className="home-kicker">Producción textil</p>
+              <h1>Nestra</h1>
+              <p className="home-statement">
+                Prepará, optimizá y exportá layouts listos para producción.
+              </p>
+              <button
+                type="button"
+                className="primary-button home-primary-action"
+                onClick={() => setView('batch')}
+              >
+                Empezar producción <span aria-hidden="true">→</span>
+              </button>
+            </div>
+
+            <div className="home-index" aria-label="Accesos rápidos">
+              <p className="home-index-label">ESPACIOS DE TRABAJO</p>
+              {([
+                ['batch', '01', 'Producción', 'Preparar un nuevo batch'],
+                ['templates', '02', 'Biblioteca', `${collections.length} diseños disponibles`],
+                ['jobs', '03', 'Historial', 'Revisar producciones anteriores'],
+              ] as const).map(([nextView, number, label, detail]) => (
+                <button type="button" key={nextView} onClick={() => setView(nextView)}>
+                  <span className="home-index-number">{number}</span>
+                  <NavIcon view={nextView} />
+                  <span className="home-index-copy">
+                    <strong>{label}</strong>
+                    <small>{detail}</small>
+                  </span>
+                  <span className="home-index-arrow" aria-hidden="true">↗</span>
+                </button>
+              ))}
+              {visibleActivity ? (
+                <button
+                  type="button"
+                  className="home-current-activity"
+                  onClick={() => setView('batch')}
+                >
+                  <span className="home-index-number">EN CURSO</span>
+                  <span className="home-index-copy">
+                    <strong>{visibleActivity.kind === 'export' ? 'Exportación' : 'Optimización'}</strong>
+                    <small>
+                      {visibleActivity.kind === 'optimization'
+                        ? `${visibleActivity.state.progress}% · ${visibleActivity.state.phase}`
+                        : visibleActivity.state.phase}
+                    </small>
+                  </span>
+                  <span className="home-index-arrow" aria-hidden="true">→</span>
+                </button>
+              ) : null}
+            </div>
           </section>
         ) : view === 'batch' ? null : (
           <section className="templates-page">

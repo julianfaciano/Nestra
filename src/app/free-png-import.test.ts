@@ -32,7 +32,7 @@ it('keeps the native PNG bytes in one File, closes the bitmap and creates one UR
   expect(result).toMatchObject({
     kind: 'free-png',
     quantity: 3,
-    fabric: 'deportiva',
+    fabric: 'set',
     sourceWidthPx: 72,
     sourceHeightPx: 144,
   });

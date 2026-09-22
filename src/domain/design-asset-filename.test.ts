@@ -103,6 +103,25 @@ describe('parseDesignAssetFilename', () => {
     });
   });
 
+  it.each([
+    ['Adoptame t1 frente.png', 'T1', 'front'],
+    ['Adoptame t1 dorso.png', 'T1', 'back'],
+    ['Adoptame T10 DORSO.PNG', 'T10', 'back'],
+    ['Mi diseño 2026_T2-FRENTE.png', 'T2', 'front'],
+  ] as const)('reconoce el formato humano %s', (fileName, size, side) => {
+    expect(parseDesignAssetFilename(fileName)).toEqual({
+      designName: fileName.startsWith('Mi') ? 'Mi diseño 2026' : 'Adoptame',
+      size,
+      side,
+    });
+  });
+
+  it('sólo interpreta talle y lado como tokens terminales', () => {
+    expect(parseDesignAssetFilename('Modelo T2 edición frente.png')).toBeNull();
+    expect(parseDesignAssetFilename('Adoptame T11 frente.png')).toBeNull();
+    expect(parseDesignAssetFilename('Adoptame T1 lateral.png')).toBeNull();
+  });
+
   it('ignora archivos que no siguen el formato', () => {
     expect(
       parseDesignAssetFilename('preview.png'),

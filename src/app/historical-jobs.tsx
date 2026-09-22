@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import {
-  buildImportedHistoricalJob,
+  buildImportableHistoricalJobs,
   formatHistoricalDate,
   groupHistoricalJobs,
   loadHistoricalJobs,
@@ -18,6 +18,7 @@ import {
   loadHistoricalPreview,
 } from '../persistence/historical-preview-cache';
 import { TrashIcon } from '../ui/trash-icon';
+import { ImageLightbox } from './image-lightbox';
 
 const NUMBER_TWO_DECIMALS = new Intl.NumberFormat('es-AR', {
   minimumFractionDigits: 2,
@@ -56,16 +57,20 @@ function jobSummary(job: HistoricalJob): string {
     formatHistoricalDate(job.createdAt),
 
     `${job.canvasCount.toLocaleString('es-AR')} canvas`,
-
-    `${formatMeters(job.meters.deportiva)} metros deportiva`,
-
-    `${formatMeters(job.meters.polar)} metros polar`,
   ];
 
-  if (job.meters.unclassified > 0.0001) {
-    parts.push(
-      `${formatMeters(job.meters.unclassified)} metros sin clasificar`,
-    );
+  if (job.fabrics?.length) {
+    for (const fabric of job.fabrics) {
+      if (fabric.meters > 0.0001) {
+        parts.push(`${formatMeters(fabric.meters)} metros ${fabric.fabric}`);
+      }
+    }
+  } else {
+    parts.push(`${formatMeters(job.meters.deportiva)} metros deportiva`);
+    parts.push(`${formatMeters(job.meters.polar)} metros polar`);
+    if (job.meters.unclassified > 0.0001) {
+      parts.push(`${formatMeters(job.meters.unclassified)} metros sin clasificar`);
+    }
   }
 
   return parts.join(' · ');
@@ -189,12 +194,19 @@ function HistoricalThumbnail({ file }: { readonly file: HistoricalFile }) {
   return (
     <div ref={hostRef} className="historical-preview-image-host">
       {url ? (
-        <img
-          src={url}
-          alt={file.name}
-          loading="lazy"
-          className="historical-preview-image"
-        />
+        <ImageLightbox
+          label={`Ampliar ${file.name}`}
+          trigger={
+            <img
+              src={url}
+              alt={file.name}
+              loading="lazy"
+              className="historical-preview-image"
+            />
+          }
+        >
+          <img src={url} alt={file.name} />
+        </ImageLightbox>
       ) : failed ? (
         <span className="historical-preview-placeholder">
           PREVIEW NO DISPONIBLE
@@ -303,7 +315,7 @@ function HistoricalJobCard({
 
               window.setTimeout(() => {
                 setCollapseGlow(false);
-              }, 1100);
+              }, 560);
             });
           });
 
@@ -643,7 +655,8 @@ export function HistoricalJobs() {
         return;
       }
 
-      const next = imported.map(buildImportedHistoricalJob);
+      const next = buildImportableHistoricalJobs(imported);
+      const ignored = imported.length - next.length;
 
       const merged = mergeHistoricalJobs(jobs, next);
 
@@ -662,7 +675,12 @@ export function HistoricalJobs() {
       saveHistoricalJobs(merged);
       setJobs(merged);
 
-      setMessage(`Importados ${added}. Actualizados ${updated}.`);
+      setMessage(
+        `Importados ${added}. Actualizados ${updated}.` +
+          (ignored > 0
+            ? ` Ignoradas ${ignored} carpetas sin una fecha histórica válida.`
+            : ''),
+      );
     } catch (error) {
       setMessage(`No se pudo importar el historial: ${String(error)}`);
     } finally {
@@ -765,17 +783,16 @@ export function HistoricalJobs() {
           disabled={isImporting}
           onClick={() => void importJobs()}
         >
-          {isImporting ? 'IMPORTANDO...' : 'IMPORTAR HISTORIAL'}
+          {isImporting ? 'Importando…' : 'Importar historial'}
         </button>
       </div>
 
       {visibleJobs.length === 0 ? (
-        <div className="jobs-empty">
-          <h2>Todavía no hay trabajos guardados.</h2>
+        <div className="jobs-empty empty-state">
+          <span className="status-badge">HISTORIAL VACÍO</span>
+          <h2>Todavía no hay producciones</h2>
 
-          <p className="muted">
-            Importá una carpeta padre o registrá un batch nuevo.
-          </p>
+          <p>Las exportaciones terminadas van a aparecer acá.</p>
         </div>
       ) : (
         <div className="historical-job-grid">
@@ -813,7 +830,7 @@ export function HistoricalJobs() {
                 className="confirm-cancel-button"
                 onClick={() => setJobPendingRemoval(null)}
               >
-                CANCELAR
+                Cancelar
               </button>
 
               <button
@@ -821,7 +838,7 @@ export function HistoricalJobs() {
                 className="confirm-delete-button"
                 onClick={removeHistoricalJob}
               >
-                ELIMINAR
+                Eliminar
               </button>
             </div>
           </div>

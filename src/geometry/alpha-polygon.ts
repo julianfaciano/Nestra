@@ -14,6 +14,45 @@ export interface AlphaPolygonResult {
   readonly outerLoopCount: number;
 }
 
+export interface AlphaPixelBounds {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Bounding rectangle of every pixel whose alpha exceeds the threshold. */
+export function extractAlphaPixelBounds(
+  imageData: ImageDataLike,
+  alphaThreshold = 0,
+): AlphaPixelBounds | null {
+  const { width, height, data } = imageData;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const alpha = data[(y * width + x) * 4 + 3] ?? 0;
+      if (alpha <= alphaThreshold) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  return maxX < minX || maxY < minY
+    ? null
+    : {
+        x: minX,
+        y: minY,
+        width: maxX - minX + 1,
+        height: maxY - minY + 1,
+      };
+}
+
 function pointKey(point: Point2D): string {
   return `${point.x},${point.y}`;
 }
@@ -313,6 +352,20 @@ function traceLoops(edges: readonly Edge[]): Point2D[][] {
   }
 
   return loops;
+}
+
+/** All opaque islands, without lossy simplification. Holes remain conservative. */
+export function extractAlphaComponents(imageData: ImageDataLike, alphaThreshold: number): readonly Polygon[] {
+  const loops = traceLoops(buildBoundaryEdges(imageData, alphaThreshold));
+  if (!loops.length) return [];
+  const largest = loops.reduce((a, b) => polygonArea(a) > polygonArea(b) ? a : b);
+  const orientation = Math.sign(signedPolygonArea(largest));
+  return loops.filter(p => Math.sign(signedPolygonArea(p)) === orientation).map(p =>
+    p.filter((b, i) => {
+      const a = p[(i + p.length - 1) % p.length]!;
+      const c = p[(i + 1) % p.length]!;
+      return (b.x - a.x) * (c.y - b.y) !== (b.y - a.y) * (c.x - b.x);
+    }));
 }
 
 export function extractLargestAlphaPolygon(

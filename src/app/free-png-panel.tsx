@@ -1,9 +1,9 @@
-import { PRODUCTION_FABRICS } from '../domain/fabric';
 import { physicalSizeFromSourcePixels } from '../domain/source-image-size';
 import { TrashIcon } from '../ui/trash-icon';
 import { FillGapsIcon } from '../ui/fill-gaps-icon';
 import type { FreePngDraft } from './batch-state';
 import { validFreePngQuantity } from './free-png-import';
+import { ImageLightbox } from './image-lightbox';
 
 const centimeters = new Intl.NumberFormat('es-AR', {
   minimumFractionDigits: 2,
@@ -12,8 +12,6 @@ const centimeters = new Intl.NumberFormat('es-AR', {
 
 export function FreePngPanel({
   pieces,
-  quantity,
-  onQuantity,
   onImport,
   onUpdate,
   onRemove,
@@ -21,8 +19,6 @@ export function FreePngPanel({
   extras,
 }: {
   readonly pieces: readonly FreePngDraft[];
-  readonly quantity: number;
-  readonly onQuantity: (quantity: number) => void;
   readonly onImport: () => void;
   readonly onUpdate: (
     id: string,
@@ -34,22 +30,19 @@ export function FreePngPanel({
 }) {
   return (
     <section className="free-png" aria-label="PNG libre">
-      <h3>PNG LIBRE</h3>
-      <div className="free-png-controls">
-        <button type="button" onClick={onImport}>
-          COLOCAR PNG
-        </button>
-        <input
-          type="number"
-          min={1}
-          step={1}
-          value={quantity}
-          aria-label="Cantidad inicial de PNG libre"
-          onChange={(event) => {
-            const value = event.currentTarget.valueAsNumber;
-            if (validFreePngQuantity(value)) onQuantity(value);
-          }}
-        />
+      <div className="free-png-heading">
+        <div className="free-png-section-title">
+          <span>02</span>
+          <div>
+            <h2>Piezas PNG</h2>
+            <p>Archivos libres a 72 PPI, requeridos o para completar espacios.</p>
+          </div>
+        </div>
+        <div className="free-png-controls">
+          <button type="button" className="secondary-button" onClick={onImport}>
+            Agregar PNG
+          </button>
+        </div>
       </div>
       {pieces.length > 0 && (
         <ul className="free-png-list">
@@ -60,7 +53,12 @@ export function FreePngPanel({
             );
             return (
               <li key={piece.id} className="free-png-row">
-                <img src={piece.imageUrl} alt="" />
+                <ImageLightbox
+                  label={`Ampliar ${piece.file.name}`}
+                  trigger={<img src={piece.imageUrl} alt="" />}
+                >
+                  <img src={piece.imageUrl} alt={piece.file.name} />
+                </ImageLightbox>
                 <span className="free-png-name" title={piece.file.name}>
                   {piece.file.name}
                 </span>
@@ -74,25 +72,22 @@ export function FreePngPanel({
                   step={1}
                   value={piece.quantity}
                   aria-label={`Cantidad de ${piece.file.name}`}
+                  onDoubleClick={(event) => event.currentTarget.select()}
                   onChange={(event) => {
                     const value = event.currentTarget.valueAsNumber;
                     if (validFreePngQuantity(value))
                       onUpdate(piece.id, { quantity: value });
                   }}
                 />
-                <select
+                <input
+                  type="text"
                   value={piece.fabric}
+                  placeholder="set"
                   aria-label={`Tela de ${piece.file.name}`}
                   onChange={(event) =>
                     onUpdate(piece.id, { fabric: event.target.value })
                   }
-                >
-                  {PRODUCTION_FABRICS.map((fabric) => (
-                    <option key={fabric} value={fabric}>
-                      {fabric.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
+                />
                 <button
                   className="free-png-fill"
                   data-fill-mode={piece.fill?.mode ?? 'off'}
@@ -111,6 +106,13 @@ export function FreePngPanel({
                   onClick={() => onToggleFill(piece.id)}
                 >
                   <FillGapsIcon max={piece.fill?.mode === 'max'} />
+                  <span className="free-png-fill-label">
+                    {piece.fill?.mode === 'max'
+                      ? 'MAX'
+                      : piece.fill
+                        ? 'NORMAL'
+                        : 'OFF'}
+                  </span>
                 </button>
                 {(extras?.get(piece.id) ?? 0) > 0 && (
                   <span className="free-png-extra-count">

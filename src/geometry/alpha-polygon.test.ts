@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ImageDataLike } from './alpha-contour';
-import { extractLargestAlphaPolygon } from './alpha-polygon';
+import {
+  extractAlphaPixelBounds,
+  extractLargestAlphaPolygon,
+} from './alpha-polygon';
+import { getPolygonBounds } from './polygon-transform';
 
 function createImageDataLike(
   alphaMatrix: readonly (readonly number[])[],
@@ -40,6 +44,55 @@ function createImageDataLike(
 }
 
 describe('alpha polygon', () => {
+  it('usa alpha > threshold y representa un píxel con ancho exacto de 1 px', () => {
+    const imageData = createImageDataLike([
+      [0, 1, 15, 16, 17, 255],
+    ]);
+
+    expect(extractAlphaPixelBounds(imageData, 16)).toEqual({
+      x: 4,
+      y: 0,
+      width: 2,
+      height: 1,
+    });
+    expect(extractAlphaPixelBounds(createImageDataLike([[0, 255, 0]]), 16)).toEqual({
+      x: 1,
+      y: 0,
+      width: 1,
+      height: 1,
+    });
+    expect(extractAlphaPixelBounds(createImageDataLike([[0, 1, 15, 16]]), 16)).toBeNull();
+  });
+
+  it('puede simplificar un saliente de 1 px sin que ese píxel deje de ser imprimible', () => {
+    const imageData = createImageDataLike([
+      [0, 0, 0, 0, 0, 0],
+      [0, 255, 255, 255, 255, 0],
+      [0, 255, 255, 255, 255, 0],
+      [255, 255, 255, 255, 255, 0],
+      [255, 255, 255, 255, 255, 0],
+      [0, 255, 255, 255, 255, 0],
+      [0, 255, 255, 255, 255, 0],
+      [0, 0, 0, 0, 0, 0],
+    ]);
+    const contour = extractLargestAlphaPolygon(imageData, 16, 1.5)!;
+
+    expect(extractAlphaPixelBounds(imageData, 16)).toEqual({
+      x: 0,
+      y: 1,
+      width: 5,
+      height: 6,
+    });
+    expect(getPolygonBounds(contour.rawPolygon)).toMatchObject({
+      minX: 0,
+      maxX: 5,
+    });
+    expect(getPolygonBounds(contour.simplifiedPolygon)).toMatchObject({
+      minX: 1,
+      maxX: 5,
+    });
+  });
+
   it('extrae el contorno exterior de un bloque', () => {
     const imageData = createImageDataLike([
       [0, 0, 0, 0],

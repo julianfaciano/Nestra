@@ -1,5 +1,6 @@
 mod design_import;
 mod historical_import;
+mod historical_import_paths;
 mod native_png;
 mod pdf_prototype;
 mod png_export;

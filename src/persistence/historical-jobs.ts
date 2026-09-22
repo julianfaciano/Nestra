@@ -45,6 +45,11 @@ export interface HistoricalJob {
   readonly createdAt: number;
   readonly canvasCount: number;
   readonly meters: HistoricalMeters;
+  /** Per-fabric totals for new optimized jobs; absent in legacy records. */
+  readonly fabrics?: readonly {
+    readonly fabric: string;
+    readonly meters: number;
+  }[];
   readonly sizeSummary?: readonly HistoricalSizeSummary[];
 
   readonly files: readonly HistoricalFile[];
@@ -142,11 +147,29 @@ interface RawHistoricalJob {
   readonly createdAt?: unknown;
   readonly canvasCount?: unknown;
   readonly meters?: unknown;
+  readonly fabrics?: unknown;
 
   readonly files?: unknown;
   readonly importedHistorical?: unknown;
   readonly optimizationRunId?: unknown;
   readonly sizeSummary?: unknown;
+}
+
+function normalizeFabricMeters(value: unknown): { fabric: string; meters: number }[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const grouped = new Map<string, number>();
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.fabric !== 'string' || !raw.fabric.trim()) continue;
+    const meters = finiteNumber(raw.meters);
+    if (meters === undefined || meters < 0) continue;
+    const fabric = raw.fabric.trim();
+    grouped.set(fabric, (grouped.get(fabric) ?? 0) + meters);
+  }
+  return grouped.size
+    ? [...grouped].map(([fabric, meters]) => ({ fabric, meters }))
+    : undefined;
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -185,33 +208,40 @@ function timestampFromParts(
    * Mediodía UTC evita que una fecha puramente calendaria
    * retroceda un día al mostrarse en Argentina.
    */
-  return Date.UTC(fullYear, month, day, 12, 0, 0);
+  const timestamp = Date.UTC(fullYear, month, day, 12, 0, 0);
+  const date = new Date(timestamp);
+
+  return date.getUTCFullYear() === fullYear &&
+    date.getUTCMonth() === month &&
+    date.getUTCDate() === day
+    ? timestamp
+    : undefined;
 }
 
 export function historicalTimestampFromText(
   value: string,
 ): number | undefined {
   const named = value.match(
-    /(\d{1,2})-([A-Za-zÁÉÍÓÚáéíóú]{3})-(\d{2,4})/,
+    /(?:^|[^\dA-Za-zÁÉÍÓÚáéíóú])(\d{1,2})-([A-Za-zÁÉÍÓÚáéíóú]{3})-(\d{2,4})(?=$|[^\dA-Za-zÁÉÍÓÚáéíóú])/,
   );
 
   if (named) {
-  const monthText = named[2];
+    const monthText = named[2];
 
-  if (!monthText) {
-    return undefined;
+    if (!monthText) {
+      return undefined;
+    }
+
+    const month = MONTH_INDEX[normalizeMonth(monthText)];
+
+    if (month !== undefined) {
+      return timestampFromParts(
+        Number(named[1]),
+        month,
+        Number(named[3]),
+      );
+    }
   }
-
-  const month = MONTH_INDEX[normalizeMonth(monthText)];
-
-  if (month !== undefined) {
-    return timestampFromParts(
-      Number(named[1]),
-      month,
-      Number(named[3]),
-    );
-  }
-}
 
   /*
    * Compatibilidad con los primeros batches de Nestra:
@@ -706,6 +736,7 @@ function normalizeHistoricalJob(
     normalizeSizeSummary(raw.sizeSummary);
   const freePngPieces = normalizePngPieces(raw.freePngPieces);
   const extraPieces = normalizePngPieces(raw.extraPieces);
+  const fabrics = normalizeFabricMeters(raw.fabrics);
 
   const jobNumber =
     finiteNumber(raw.jobNumber) ??
@@ -735,6 +766,7 @@ function normalizeHistoricalJob(
     ),
 
     meters,
+    ...(fabrics ? { fabrics } : {}),
 
     ...(sizeSummary
       ? { sizeSummary }
@@ -847,6 +879,25 @@ function mergeLocalSession(jobs: readonly HistoricalJob[]): HistoricalJob {
   const sizeSummary = mergeHistoricalSizes(jobs);
   const freePngPieces = mergePngSummaries(jobs, 'freePngPieces');
   const extraPieces = mergePngSummaries(jobs, 'extraPieces');
+  const fabricTotals = new Map<string, number>();
+  for (const job of jobs) {
+    if (job.fabrics?.length) {
+      for (const item of job.fabrics) {
+        fabricTotals.set(item.fabric, (fabricTotals.get(item.fabric) ?? 0) + item.meters);
+      }
+    } else {
+      for (const item of [
+        { fabric: 'deportiva', meters: job.meters.deportiva },
+        { fabric: 'polar', meters: job.meters.polar },
+        { fabric: 'sin clasificar', meters: job.meters.unclassified },
+      ]) {
+        if (item.meters > 0) fabricTotals.set(item.fabric, (fabricTotals.get(item.fabric) ?? 0) + item.meters);
+      }
+    }
+  }
+  const fabrics = fabricTotals.size
+    ? [...fabricTotals].map(([fabric, meters]) => ({ fabric, meters }))
+    : undefined;
   return {
     id: `session:${first.id}`,
     jobNumber: first.jobNumber,
@@ -857,6 +908,7 @@ function mergeLocalSession(jobs: readonly HistoricalJob[]): HistoricalJob {
     sessionJobIds: jobs.map((job) => job.id),
     canvasCount: jobs.reduce((total, job) => total + job.canvasCount, 0),
     meters,
+    ...(fabrics ? { fabrics } : {}),
     files,
     ...(sizeSummary ? { sizeSummary } : {}),
     ...(freePngPieces ? { freePngPieces } : {}),
@@ -965,6 +1017,20 @@ export function buildImportedHistoricalJob(
   };
 }
 
+/**
+ * Converts only native folders whose names contain a supported historical
+ * date. This is the same decision used by the Historial import action.
+ */
+export function buildImportableHistoricalJobs(
+  jobs: readonly NativeHistoricalJob[],
+): HistoricalJob[] {
+  return jobs.flatMap((job) =>
+    historicalTimestampFromText(job.name) === undefined
+      ? []
+      : [buildImportedHistoricalJob(job)],
+  );
+}
+
 export function loadHistoricalJobs(): HistoricalJob[] {
   try {
     const parsed: unknown = JSON.parse(
@@ -1071,6 +1137,7 @@ export function recordOptimizedBatch(
 
   const freePngPieces = normalizePngPieces(batch.freePngPieces);
   const extraPieces = normalizePngPieces(batch.extraPieces);
+  const fabrics = normalizeFabricMeters(batch.fabrics);
   const jobs = loadHistoricalJobs();
   if (
     batch.optimizationRunId &&
@@ -1112,6 +1179,7 @@ name:
         Math.round(batch.canvasCount),
       ),
       meters: mutableMeters,
+      ...(fabrics ? { fabrics } : {}),
       files: batch.files ?? [],
 
 ...(batch.sizeSummary

@@ -1,4 +1,5 @@
 import type { Polygon } from '../geometry/polygon';
+import type { AlphaPixelBounds } from '../geometry/alpha-polygon';
 
 const DB_NAME = 'nestra-contour-cache';
 const STORE = 'contours';
@@ -8,17 +9,21 @@ const DB_VERSION = 1;
  * Subir esta versión invalida automáticamente todos los contornos
  * persistidos si en el futuro cambia el algoritmo geométrico.
  */
-const CONTOUR_ALGORITHM_VERSION = 1;
+const CONTOUR_ALGORITHM_VERSION = 4;
 
 export interface CachedContourPair {
   readonly fastPolygon: Polygon;
   readonly finePolygon: Polygon;
+  readonly sourceAlphaBounds: AlphaPixelBounds;
+  readonly sourcePlacementBounds: AlphaPixelBounds;
 }
 
 interface StoredContourPair {
-  readonly version: 1;
+  readonly version: 3;
   readonly fastPolygon: Polygon;
   readonly finePolygon: Polygon;
+  readonly sourceAlphaBounds: AlphaPixelBounds;
+  readonly sourcePlacementBounds: AlphaPixelBounds;
 }
 
 interface ContourCacheKeyOptions {
@@ -109,14 +114,34 @@ function isPolygon(value: unknown): value is Polygon {
   );
 }
 
+function isAlphaPixelBounds(value: unknown): value is AlphaPixelBounds {
+  return (
+    record(value) &&
+    typeof value.x === 'number' &&
+    Number.isInteger(value.x) &&
+    value.x >= 0 &&
+    typeof value.y === 'number' &&
+    Number.isInteger(value.y) &&
+    value.y >= 0 &&
+    typeof value.width === 'number' &&
+    Number.isInteger(value.width) &&
+    value.width > 0 &&
+    typeof value.height === 'number' &&
+    Number.isInteger(value.height) &&
+    value.height > 0
+  );
+}
+
 function validateStoredContourPair(
   value: unknown,
 ): asserts value is StoredContourPair {
   if (
     !record(value) ||
-    value.version !== 1 ||
+    value.version !== 3 ||
     !isPolygon(value.fastPolygon) ||
-    !isPolygon(value.finePolygon)
+    !isPolygon(value.finePolygon) ||
+    !isAlphaPixelBounds(value.sourceAlphaBounds) ||
+    !isAlphaPixelBounds(value.sourcePlacementBounds)
   ) {
     throw new Error('Contorno guardado inválido.');
   }
@@ -197,6 +222,8 @@ export async function loadCachedContourPair(
     return {
       fastPolygon: value.fastPolygon,
       finePolygon: value.finePolygon,
+      sourceAlphaBounds: value.sourceAlphaBounds,
+      sourcePlacementBounds: value.sourcePlacementBounds,
     };
   } finally {
     db.close();
@@ -208,9 +235,11 @@ export async function saveCachedContourPair(
   value: CachedContourPair,
 ): Promise<void> {
   const stored: StoredContourPair = {
-    version: 1,
+    version: 3,
     fastPolygon: value.fastPolygon,
     finePolygon: value.finePolygon,
+    sourceAlphaBounds: value.sourceAlphaBounds,
+    sourcePlacementBounds: value.sourcePlacementBounds,
   };
 
   validateStoredContourPair(stored);

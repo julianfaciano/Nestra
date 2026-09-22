@@ -9,7 +9,7 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Nestra' })).toBeInTheDocument();
 
     expect(
-      screen.getByText('Prepará y optimizá layouts textiles para producción.'),
+      screen.getByText('Prepará, optimizá y exportá layouts listos para producción.'),
     ).toBeInTheDocument();
   });
 
@@ -18,13 +18,13 @@ describe('App', () => {
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'BIBLIOTECA',
+        name: 'Biblioteca',
       }),
     );
 
     expect(
       screen.getByRole('heading', {
-        name: 'Biblioteca de diseños',
+        name: 'Biblioteca',
       }),
     ).toBeInTheDocument();
 

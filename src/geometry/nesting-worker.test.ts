@@ -38,10 +38,21 @@ it('disables profiling by default and honors explicit opt-in and opt-out', async
     data: input,
   } as MessageEvent<MultiNestingInput>);
 
-  const plainDefault = postMessage.mock.calls[0]![0] as {
+  const resultMessages = () =>
+    postMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.result);
+
+  const plainDefault = resultMessages()[0] as {
     result: MultiNestingResult;
     workerMs: number;
   };
+
+  expect(
+    postMessage.mock.calls
+      .map(([message]) => message.progress?.phase)
+      .filter(Boolean),
+  ).toEqual(['preparing', 'required', 'finalizing']);
 
   expect(
     plainDefault.result.diagnostics!.profile,
@@ -58,7 +69,7 @@ it('disables profiling by default and honors explicit opt-in and opt-out', async
     },
   } as MessageEvent<MultiNestingInput>);
 
-  const measured = postMessage.mock.calls[1]![0] as typeof plainDefault;
+  const measured = resultMessages()[1] as typeof plainDefault;
 
   expect(
     measured.result.diagnostics!.profile,
@@ -83,7 +94,7 @@ it('disables profiling by default and honors explicit opt-in and opt-out', async
     },
   } as MessageEvent<MultiNestingInput>);
 
-  const plainExplicit = postMessage.mock.calls[2]![0] as typeof plainDefault;
+  const plainExplicit = resultMessages()[2] as typeof plainDefault;
 
   expect(
     plainExplicit.result.diagnostics!.profile,

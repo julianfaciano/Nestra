@@ -60,16 +60,18 @@ function segmentsProperlyIntersect(
 function pointIsStrictlyInsidePolygon(
   point: Point2D,
   polygon: Polygon,
+  edges?: readonly number[],
 ): boolean {
   let inside = false;
 
   for (
     let currentIndex = 0, previousIndex = polygon.length - 1;
-    currentIndex < polygon.length;
+    currentIndex < (edges?.length ?? polygon.length);
     previousIndex = currentIndex, currentIndex += 1
   ) {
-    const current = polygon[currentIndex];
-    const previous = polygon[previousIndex];
+    const edge = edges?.[currentIndex];
+    const current = polygon[edge === undefined ? currentIndex : (edge + 1) % polygon.length];
+    const previous = polygon[edge === undefined ? previousIndex : edge];
 
     if (!current || !previous) {
       continue;
@@ -215,6 +217,8 @@ function collinearEdgesCreateAreaOverlap(
 function polygonsHaveAreaIntersection(
   first: Polygon,
   second: Polygon,
+  candidates?: (a: Point2D, b: Point2D) => readonly number[],
+  indexedBounds?: PolygonBounds,
 ): boolean {
   for (let firstIndex = 0; firstIndex < first.length; firstIndex += 1) {
     const firstStart = first[firstIndex];
@@ -224,7 +228,17 @@ function polygonsHaveAreaIntersection(
       continue;
     }
 
-    for (let secondIndex = 0; secondIndex < second.length; secondIndex += 1) {
+    // Filler-only indexed path: avoid allocating/querying an empty candidate
+    // list when this edge cannot meet any edge of the other polygon.
+    if (indexedBounds && (
+      Math.max(firstStart.x,firstEnd.x) < indexedBounds.minX-EPSILON ||
+      Math.min(firstStart.x,firstEnd.x) > indexedBounds.maxX+EPSILON ||
+      Math.max(firstStart.y,firstEnd.y) < indexedBounds.minY-EPSILON ||
+      Math.min(firstStart.y,firstEnd.y) > indexedBounds.maxY+EPSILON)) continue;
+
+    const indices = candidates?.(firstStart, firstEnd);
+    for (let offset = 0; offset < (indices?.length ?? second.length); offset += 1) {
+      const secondIndex = indices ? indices[offset]! : offset;
       const secondStart = second[secondIndex];
       const secondEnd = second[(secondIndex + 1) % second.length];
 
@@ -268,6 +282,8 @@ export function polygonsOverlap(
   second: Polygon,
   firstBounds?: PolygonBounds,
   secondBounds?: PolygonBounds,
+  candidates?: (a: Point2D, b: Point2D) => readonly number[],
+  contains = pointIsStrictlyInsidePolygon,
 ): boolean {
   if (first.length < 3 || second.length < 3) {
     return false;
@@ -286,7 +302,7 @@ export function polygonsOverlap(
     return false;
   }
 
-if (polygonsHaveAreaIntersection(first, second)) {
+if (polygonsHaveAreaIntersection(first, second, candidates, candidates ? secondBounds : undefined)) {
     return true;
   }
 
@@ -295,16 +311,94 @@ if (polygonsHaveAreaIntersection(first, second)) {
    * contenida dentro de la otra.
    */
   for (const point of first) {
-    if (pointIsStrictlyInsidePolygon(point, second)) {
+    if (candidates && secondBounds && (point.x < secondBounds.minX-EPSILON || point.x > secondBounds.maxX+EPSILON ||
+      point.y < secondBounds.minY-EPSILON || point.y > secondBounds.maxY+EPSILON)) continue;
+    if (contains(point, second)) {
       return true;
     }
   }
 
   for (const point of second) {
-    if (pointIsStrictlyInsidePolygon(point, first)) {
+    if (candidates && firstBounds && (point.x < firstBounds.minX-EPSILON || point.x > firstBounds.maxX+EPSILON ||
+      point.y < firstBounds.minY-EPSILON || point.y > firstBounds.maxY+EPSILON)) continue;
+    if (contains(point, first)) {
       return true;
     }
   }
 
   return false;
+}
+
+/** Per filler phase: index immutable placed contours; keep all exact predicates. */
+export function createPolygonSegmentQuery() {
+  interface Node {
+    minX: number; maxX: number; minY: number; maxY: number;
+    indices?: number[]; left?: Node; right?: Node;
+  }
+  const cache = new WeakMap<Polygon, Node>();
+  const build = (polygon: Polygon): Node => {
+    const edges = polygon.map((a,i) => {
+      const b = polygon[(i+1)%polygon.length]!;
+      return {i,minX:Math.min(a.x,b.x),maxX:Math.max(a.x,b.x),minY:Math.min(a.y,b.y),maxY:Math.max(a.y,b.y)};
+    });
+    const branch = (items: typeof edges): Node => {
+      const node: Node = {minX:Infinity,maxX:-Infinity,minY:Infinity,maxY:-Infinity};
+      for (const e of items) {
+        node.minX=Math.min(node.minX,e.minX); node.maxX=Math.max(node.maxX,e.maxX);
+        node.minY=Math.min(node.minY,e.minY); node.maxY=Math.max(node.maxY,e.maxY);
+      }
+      if(items.length <= 8) node.indices=items.map(e=>e.i);
+      else {
+        const x = node.maxX-node.minX >= node.maxY-node.minY;
+        items.sort((a,b)=>x ? (a.minX+a.maxX)-(b.minX+b.maxX) : (a.minY+a.maxY)-(b.minY+b.maxY));
+        const middle=Math.floor(items.length/2);
+        node.left=branch(items.slice(0,middle)); node.right=branch(items.slice(middle));
+      }
+      return node;
+    };
+    return branch(edges);
+  };
+  return (second: Polygon, a: Point2D, b: Point2D): readonly number[] => {
+    let root=cache.get(second);
+    if(!root) {root=build(second);cache.set(second,root);}
+      const minX=Math.min(a.x,b.x),maxX=Math.max(a.x,b.x),minY=Math.min(a.y,b.y),maxY=Math.max(a.y,b.y);
+      const indices:number[]=[];
+      const visit=(node:Node):void=>{
+        if(maxX < node.minX-EPSILON || node.maxX < minX-EPSILON || maxY < node.minY-EPSILON || node.maxY < minY-EPSILON) return;
+        if(node.indices) indices.push(...node.indices);
+        else {visit(node.left!);visit(node.right!);}
+      };
+      visit(root!);
+      // Preserve the reference's exact evaluation order for surviving segments.
+      return indices.sort((a,b)=>a-b);
+  };
+}
+
+export function createIndexedPolygonOverlap(segments = createPolygonSegmentQuery()): typeof polygonsOverlap {
+  const boundsCache = new WeakMap<Polygon, PolygonBounds>();
+  const contains = (point: Point2D, polygon: Polygon, indexed: boolean): boolean => {
+    if (polygon.length <= 8) return pointIsStrictlyInsidePolygon(point, polygon);
+    if (indexed) {
+      const bounds = boundsCache.get(polygon)!;
+      return pointIsStrictlyInsidePolygon(point, polygon, segments(polygon,
+        {x:bounds.minX,y:point.y}, {x:bounds.maxX,y:point.y}));
+    }
+    // Retain every ray crossing and possible boundary hit, including EPSILON.
+    // A linear y filter avoids building an index for transient candidate polygons.
+    const edges: number[] = [];
+    for (let i=0;i<polygon.length;i++) {
+      const a=polygon[i]!, b=polygon[(i+1)%polygon.length]!;
+      if (point.y >= Math.min(a.y,b.y)-EPSILON && point.y <= Math.max(a.y,b.y)+EPSILON) edges.push(i);
+    }
+    return pointIsStrictlyInsidePolygon(point, polygon, edges);
+  };
+  return (first, second, firstBounds, secondBounds) => {
+    if(first.length < 3 || second.length < 3) return false;
+    firstBounds ??= getPolygonBounds(first);
+    secondBounds ??= boundsCache.get(second) ?? getPolygonBounds(second);
+    boundsCache.set(second,secondBounds);
+    if(!boundsOverlapWithArea(firstBounds,secondBounds)) return false;
+    return polygonsOverlap(first,second,firstBounds,secondBounds,(a,b)=>segments(second,a,b),
+      (point,polygon)=>contains(point,polygon,polygon===second));
+  };
 }

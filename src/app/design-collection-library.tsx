@@ -2,13 +2,12 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   buildDesignCollection,
-  findCollectionAsset,
   findCollectionPreviewAsset,
   isCollectionComplete,
   type DesignCollection,
 } from './design-collection-state';
-import { GARMENT_SIZES } from '../domain/size';
 import { TrashIcon } from '../ui/trash-icon';
+import { ImageLightbox } from './image-lightbox';
 
 interface DesignCollectionLibraryProps {
   readonly collections: readonly DesignCollection[];
@@ -39,10 +38,29 @@ export function AssetPreview({
       setUrl((current) => (current === next ? undefined : current));
     };
   }, [asset]);
-  return url ? (
-    <img src={url} alt={label} />
-  ) : (
-    <span className="collection-preview-placeholder">—</span>
+  return (
+    <figure className="asset-preview">
+      <figcaption>{label}</figcaption>
+      {url ? (
+        <ImageLightbox
+          label={`Ampliar ${label}`}
+          trigger={<img src={url} alt={label} />}
+        >
+          <img src={url} alt={label} />
+        </ImageLightbox>
+      ) : (
+        <span className="collection-preview-placeholder">—</span>
+      )}
+    </figure>
+  );
+}
+
+function ReloadIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M15.6 6.3A6.2 6.2 0 1 0 16 13" />
+      <path d="M15.6 2.8v3.5h-3.5" />
+    </svg>
   );
 }
 
@@ -160,19 +178,31 @@ export function DesignCollectionLibrary({
           </p>
         </div>
 
-        <button
-          type="button"
-          className="secondary-button design-folder-button"
-          disabled={isImporting}
-          onClick={() => void handleNativeFolderImport()}
-        >
-          {isImporting ? 'IMPORTANDO...' : 'IMPORTAR CARPETA DE DISEÑO'}
-        </button>
+        {collections.length > 0 ? (
+          <button
+            type="button"
+            className="secondary-button design-folder-button"
+            disabled={isImporting}
+            onClick={() => void handleNativeFolderImport()}
+          >
+            {isImporting ? 'Importando…' : 'Importar colección'}
+          </button>
+        ) : null}
       </div>
 
       {collections.length === 0 ? (
-        <div className="design-collection-empty">
-          Todavía no importaste ningún diseño completo.
+        <div className="design-collection-empty empty-state">
+          <span className="status-badge">BIBLIOTECA VACÍA</span>
+          <h2>Todavía no hay diseños</h2>
+          <p>Importá tu primera colección para empezar a producir.</p>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={isImporting}
+            onClick={() => void handleNativeFolderImport()}
+          >
+            {isImporting ? 'Importando…' : 'Importar colección'}
+          </button>
         </div>
       ) : (
         <div className="design-collection-grid">
@@ -188,21 +218,21 @@ export function DesignCollectionLibrary({
 
               return (
                 <article key={collection.id} className="design-collection-card">
+                  <div className="library-card-previews">
+                    {(['front', 'back'] as const).map((side) => (
+                      <AssetPreview
+                        key={side}
+                        asset={findCollectionPreviewAsset(collection, side)}
+                        label={side === 'front' ? 'Frente' : 'Dorso'}
+                      />
+                    ))}
+                  </div>
+
                   <div className="design-collection-card-header">
                     <div>
                       <h3>{collection.name}</h3>
 
-                      <p className="muted">
-                        {
-                          GARMENT_SIZES.filter(
-                            (size) =>
-                              findCollectionAsset(collection, size, 'front') &&
-                              findCollectionAsset(collection, size, 'back'),
-                          ).length
-                        }{' '}
-                        / 10 talles
-                        {complete ? ' ✓' : ''}
-                      </p>
+                      <p className="muted">T1–T10 · frente y dorso</p>
                     </div>
 
                     <div className="design-collection-card-actions">
@@ -234,7 +264,7 @@ export function DesignCollectionLibrary({
                             : 'Carpeta original no disponible'
                         }
                       >
-                        ↻
+                        <ReloadIcon />
                       </button>
 
                       <button
@@ -246,16 +276,6 @@ export function DesignCollectionLibrary({
                         <TrashIcon />
                       </button>
                     </div>
-                  </div>
-
-                  <div className="library-card-previews">
-                    {(['front', 'back'] as const).map((side) => (
-                      <AssetPreview
-                        key={side}
-                        asset={findCollectionPreviewAsset(collection, side)}
-                        label={side === 'front' ? 'Frente' : 'Dorso'}
-                      />
-                    ))}
                   </div>
 
                   {collection.duplicateSlots.length > 0 ? (

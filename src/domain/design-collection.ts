@@ -74,9 +74,7 @@ export function scanDesignCollection(
     };
   }
 
-  const name = collectionNameFromRelativePath(
-    files[0]?.relativePath ?? '',
-  );
+  let name = collectionNameFromRelativePath(files[0]?.relativePath ?? '');
 
   const assets: DesignCollectionAssetDescriptor[] = [];
   const ignoredFileNames: string[] = [];
@@ -89,6 +87,10 @@ export function scanDesignCollection(
     if (!parsed) {
       ignoredFileNames.push(file.fileName);
       continue;
+    }
+
+    if (parsed.designName) {
+      name = parsed.designName;
     }
 
     const key = slotKey(parsed.size, parsed.side);

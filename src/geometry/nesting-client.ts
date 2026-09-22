@@ -1,6 +1,7 @@
 import type {
   MultiNestingInput,
   MultiNestingResult,
+  NestingProgress,
 } from './multi-piece-nesting-engine';
 import { captureNestingInput } from './nesting-input-capture';
 
@@ -14,6 +15,7 @@ interface NestingWorkerResponse {
   readonly result?: MultiNestingResult;
   readonly error?: string;
   readonly workerMs?: number;
+  readonly progress?: NestingProgress;
 }
 
 export function nestInWorker(
@@ -22,6 +24,7 @@ export function nestInWorker(
   reportTiming?: (
     timing: NestingWorkerTiming,
   ) => void,
+  reportProgress?: (progress: NestingProgress) => void,
 ): Promise<MultiNestingResult> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -72,6 +75,11 @@ export function nestInWorker(
     worker.onmessage = (
       event: MessageEvent<NestingWorkerResponse>,
     ) => {
+      if (event.data.progress) {
+        reportProgress?.(event.data.progress);
+        return;
+      }
+
       const roundTripMs =
         performance.now() - startedAt;
 

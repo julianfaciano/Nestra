@@ -1,4 +1,27 @@
-import type { PreflightReport } from '../export/export-plan';
+import type { ExportLayout, PreflightReport } from '../export/export-plan';
+import { ImageLightbox } from './image-lightbox';
+
+function ExportArtwork({ layout }: { readonly layout: ExportLayout }) {
+  return (
+    <svg
+      viewBox={`${layout.offsetX} ${layout.offsetY} ${layout.widthMm} ${layout.heightMm}`}
+      className="batch-export-artwork"
+      aria-label={'Arte de ' + layout.name}
+    >
+      {layout.pieces.map((art, index) => (
+        <image
+          key={index}
+          href={art.definition.imageUrl}
+          x={0}
+          y={0}
+          width={art.definition.physicalWidthMm}
+          height={art.definition.physicalHeightMm}
+          transform={`translate(${art.translateX} ${art.translateY}) rotate(${art.placement.rotation})`}
+        />
+      ))}
+    </svg>
+  );
+}
 
 export function BatchExportPanel({
   report,
@@ -37,12 +60,6 @@ export function BatchExportPanel({
       ) : null}
 
       <div className="batch-export-primary-flow">
-        <p className="batch-flow-message">LISTO PARA EXPORTAR</p>
-
-        <div className="batch-flow-arrow" aria-hidden="true">
-          ↓
-        </div>
-
         <button
           type="button"
           className={['batch-primary-button', exported ? 'is-exported' : '']
@@ -54,11 +71,13 @@ export function BatchExportPanel({
           {exported ? (
             <>
               {fileCount}{' '}
-              {fileCount === 1 ? 'ARCHIVO EXPORTADO' : 'ARCHIVOS EXPORTADOS'}
+              {fileCount === 1 ? 'archivo exportado' : 'archivos exportados'}
+              <span aria-hidden="true">↗</span>
             </>
           ) : (
             <>
-              EXPORTAR {fileCount} {fileCount === 1 ? 'ARCHIVO' : 'ARCHIVOS'}
+              Exportar {fileCount} {fileCount === 1 ? 'archivo' : 'archivos'}
+              <span aria-hidden="true">↗</span>
             </>
           )}
         </button>
@@ -77,7 +96,7 @@ export function BatchExportPanel({
             className="cancel-operation-button"
             onClick={onCancel}
           >
-            CANCELAR OPERACIÓN
+            Cancelar
           </button>
         </div>
       ) : null}
@@ -91,31 +110,12 @@ export function BatchExportPanel({
               {layout.heightPx} px
             </figcaption>
 
-            <svg
-              viewBox={`${layout.offsetX} ${layout.offsetY} ${layout.widthMm} ${layout.heightMm}`}
-              style={{
-                background: 'white',
-                display: 'block',
-                width: '100%',
-                maxWidth: 740,
-                height: 'auto',
-                marginInline: 'auto',
-                aspectRatio: `${layout.widthMm} / ${layout.heightMm}`,
-              }}
-              aria-label={'Arte de ' + layout.name}
+            <ImageLightbox
+              label={`Ampliar ${layout.name}`}
+              trigger={<ExportArtwork layout={layout} />}
             >
-              {layout.pieces.map((art, index) => (
-                <image
-                  key={index}
-                  href={art.definition.imageUrl}
-                  x={0}
-                  y={0}
-                  width={art.definition.physicalWidthMm}
-                  height={art.definition.physicalHeightMm}
-                  transform={`translate(${art.translateX} ${art.translateY}) rotate(${art.placement.rotation})`}
-                />
-              ))}
-            </svg>
+              <ExportArtwork layout={layout} />
+            </ImageLightbox>
           </figure>
         ))}
       </div>

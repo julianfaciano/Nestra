@@ -34,7 +34,22 @@ export function drawStrip(context: CanvasRenderingContext2D, layout: ExportLayou
     context.translate(-layout.offsetX * PX_PER_MM, -layout.offsetY * PX_PER_MM - y);
     context.translate(art.translateX * PX_PER_MM, art.translateY * PX_PER_MM);
     context.rotate(art.placement.rotation * Math.PI / 180);
-    context.drawImage(image, 0, 0, art.definition.physicalWidthMm * PX_PER_MM, art.definition.physicalHeightMm * PX_PER_MM);
+    const crop = art.sourceCrop;
+    if (crop) {
+      context.drawImage(
+        image,
+        crop.xPx,
+        crop.yPx,
+        crop.widthPx,
+        crop.heightPx,
+        crop.xMm * PX_PER_MM,
+        crop.yMm * PX_PER_MM,
+        crop.widthMm * PX_PER_MM,
+        crop.heightMm * PX_PER_MM,
+      );
+    } else {
+      context.drawImage(image, 0, 0, art.definition.physicalWidthMm * PX_PER_MM, art.definition.physicalHeightMm * PX_PER_MM);
+    }
     context.restore();
   }
 }

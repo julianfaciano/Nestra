@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_PRODUCTION_FABRIC } from '../domain/fabric';
+import { DEFAULT_FREE_PNG_FABRIC } from '../domain/fabric';
 import type { FreePngDraft } from './batch-state';
 
 // Covers 148 × 500 cm at 72 PPI (~59.5 MP), independently of garment limits.
@@ -43,7 +43,7 @@ export async function chooseFreePng(
       kind: 'free-png',
       id: crypto.randomUUID(),
       file,
-      fabric: DEFAULT_PRODUCTION_FABRIC,
+      fabric: DEFAULT_FREE_PNG_FABRIC,
       quantity,
       sourceWidthPx: image.width,
       sourceHeightPx: image.height,

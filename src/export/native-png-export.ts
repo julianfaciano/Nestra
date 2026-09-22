@@ -1,5 +1,7 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import { preflightBatch, PX_PER_MM, type ExportLayout, type PreparedBatch } from './export-plan';
+import { rotatePoint } from '../geometry/polygon-transform';
+import { prepareExportSourceBlob, sourceCropKey } from './export-source-crop';
 
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 export interface NativePngPlan {
@@ -42,8 +44,12 @@ export function nativePngPlan(layout: ExportLayout, sources: ReadonlyMap<string,
     pieces: layout.pieces.map(art => {
       const source = sources.get(art.definition.id);
       if (source === undefined) throw new Error('Fuente no preparada: ' + art.definition.fileName);
-      return { source, translateX: art.translateX * PX_PER_MM, translateY: art.translateY * PX_PER_MM,
-        width: art.definition.physicalWidthMm * PX_PER_MM, height: art.definition.physicalHeightMm * PX_PER_MM,
+      const crop = art.sourceCrop;
+      const origin = crop
+        ? rotatePoint({ x: crop.xMm, y: crop.yMm }, art.placement.rotation)
+        : { x: 0, y: 0 };
+      return { source, translateX: (art.translateX + origin.x) * PX_PER_MM, translateY: (art.translateY + origin.y) * PX_PER_MM,
+        width: (crop?.widthMm ?? art.definition.physicalWidthMm) * PX_PER_MM, height: (crop?.heightMm ?? art.definition.physicalHeightMm) * PX_PER_MM,
         rotation: art.placement.rotation };
     }),
   };
@@ -98,30 +104,38 @@ export async function exportBatchPng(
     const sources = new Map<string, number>();
     const urls = new Map<string, { source: number; width: number; height: number }>();
     const hashes = new Map<string, { source: number; width: number; height: number }>();
-    const definitions = new Map(report.layouts.flatMap(layout => layout.pieces.map(art => [art.definition.id, art.definition] as const)));
-    for (const d of definitions.values()) {
+    const artworks = new Map(report.layouts.flatMap(layout => layout.pieces.map(art => [art.definition.id, art] as const)));
+    for (const art of artworks.values()) {
+      const d = art.definition;
       signal.throwIfAborted();
-      const reused = urls.get(d.imageUrl);
+      const cacheKey = sourceCropKey(d, art.sourceCrop);
+      const reused = urls.get(cacheKey);
       if (reused) {
-        if (reused.width !== d.sourceWidthPx || reused.height !== d.sourceHeightPx) throw new Error('Dimensiones de fuente inconsistentes.');
         sources.set(d.id, reused.source);
         continue;
       }
-      progress('Preparando PNG fuente · ' + (sources.size + 1) + '/' + definitions.size);
+      progress('Preparando PNG fuente · ' + (sources.size + 1) + '/' + artworks.size);
       // File/IndexedDB assets have object URLs, not filesystem paths. Only their
       // compressed bytes cross IPC, once per content hash, without base64/JSON.
       const response = await fetch(d.imageUrl, { signal });
       if (!response.ok) throw new Error('No se pudo leer ' + d.fileName);
-      const blob = await response.blob();
-      if (!blob.size || blob.size > MAX_SOURCE_BYTES) throw new Error('El PNG fuente debe ocupar como máximo 64 MiB: ' + d.fileName);
-      const bytes = await blob.arrayBuffer();
+      const original = await response.blob();
+      if (!original.size || original.size > MAX_SOURCE_BYTES) throw new Error('El PNG fuente debe ocupar como máximo 64 MiB: ' + d.fileName);
+      const prepared = await prepareExportSourceBlob(
+        original,
+        d,
+        art.sourceCrop,
+        signal,
+      );
+      const bytes = await prepared.blob.arrayBuffer();
+      if (!bytes.byteLength || bytes.byteLength > MAX_SOURCE_BYTES) throw new Error('La fuente PNG recortada debe ocupar como máximo 64 MiB: ' + d.fileName);
       const digest = await crypto.subtle.digest('SHA-256', bytes);
       const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
       signal.throwIfAborted();
       let source = hashes.get(hash);
-      if (source && (source.width !== d.sourceWidthPx || source.height !== d.sourceHeightPx)) throw new Error('Dimensiones de fuente inconsistentes.');
+      if (source && (source.width !== prepared.width || source.height !== prepared.height)) throw new Error('Dimensiones de fuente inconsistentes.');
       if (!source) {
-        source = { source: hashes.size, width: d.sourceWidthPx, height: d.sourceHeightPx };
+        source = { source: hashes.size, width: prepared.width, height: prepared.height };
         diagnostics.ipcCalls++;
         const decoded = await invoke<{ decodeMs: number }>('upload_png_source', bytes, { headers: {
           'x-nestra-session': session, 'x-nestra-source': String(source.source),
@@ -132,7 +146,7 @@ export async function exportBatchPng(
         diagnostics.decodeMs += decoded.decodeMs;
         hashes.set(hash, source);
       }
-      urls.set(d.imageUrl, source);
+      urls.set(cacheKey, source);
       sources.set(d.id, source.source);
     }
     diagnostics.sourcePreparationTransferMs = performance.now() - preparation;

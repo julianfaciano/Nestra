@@ -4,14 +4,16 @@ import { expandPieceDefinitions } from '../domain/piece-instance';
 import { getAllowedRotationsForPiece } from '../domain/piece-rotation';
 import type { Polygon } from '../geometry/polygon';
 import type { MultiNestingLayout } from '../geometry/multi-piece-nesting-engine';
-import { getPolygonBounds, rotatePoint, transformPolygon, type PolygonPlacement } from '../geometry/polygon-transform';
-import { polygonsOverlap } from '../geometry/polygon-collision';
+import { getPolygonBounds, rotatePoint, transformPolygon, type PolygonBounds, type PolygonPlacement } from '../geometry/polygon-transform';
+import { componentsOverlap } from '../geometry/polygon-components';
 import { polygonFitsInsideCanvas } from '../geometry/canvas-geometry';
 import { artworkBounds } from '../geometry/artwork-bounds';
 import { extraPieceId, type ExtraPieceIdentity } from '../geometry/filler-types';
+import type { AlphaPixelBounds } from '../geometry/alpha-polygon';
 
 export const EXPORT_PPI = 300;
 export const PX_PER_MM = EXPORT_PPI / 25.4;
+export const PRODUCTIVE_CANVAS_WIDTH_MM = 1480;
 export interface FabricBatchResult {
   readonly fabric: string;
   readonly layouts: readonly MultiNestingLayout[];
@@ -21,8 +23,21 @@ export interface FabricBatchResult {
 export interface PreparedBatch {
   readonly definitions: readonly BatchPieceDefinition[];
   readonly polygons: ReadonlyMap<string, Polygon>;
+  readonly collisionPolygons?: ReadonlyMap<string, Polygon>;
+  readonly sourceAlphaBounds?: ReadonlyMap<string, AlphaPixelBounds>;
+  readonly sourcePlacementBounds?: ReadonlyMap<string, AlphaPixelBounds>;
   readonly results: readonly FabricBatchResult[];
   readonly profile: CanvasProfile;
+}
+export interface SourceCrop {
+  readonly xPx: number;
+  readonly yPx: number;
+  readonly widthPx: number;
+  readonly heightPx: number;
+  readonly xMm: number;
+  readonly yMm: number;
+  readonly widthMm: number;
+  readonly heightMm: number;
 }
 export interface ArtworkPlacement {
   readonly extra?: ExtraPieceIdentity;
@@ -30,6 +45,7 @@ export interface ArtworkPlacement {
   readonly placement: PolygonPlacement;
   readonly translateX: number;
   readonly translateY: number;
+  readonly sourceCrop?: SourceCrop;
 }
 export interface ExportLayout {
   readonly name: string;
@@ -46,7 +62,39 @@ export interface PreflightReport {
   readonly errors: readonly string[];
   readonly warnings: readonly string[];
   readonly layouts: readonly ExportLayout[];
+  readonly boundsIssues: readonly PreflightBoundsIssue[];
 }
+export interface PreflightBoundsIssue {
+  readonly kind: 'visible-bounds-overflow';
+  readonly message: string;
+  readonly fabric: string;
+  readonly canvasIndex: number;
+  readonly instanceId: string;
+  readonly definitionId: string;
+  readonly design: string;
+  readonly size?: string;
+  readonly side?: 'front' | 'back';
+  readonly rotation: PolygonPlacement['rotation'];
+  readonly placement: Pick<PolygonPlacement, 'x' | 'y'>;
+  readonly sourceDimensionsPx: { readonly width: number; readonly height: number };
+  readonly sourceAlphaBoundsPx: AlphaPixelBounds;
+  readonly sourceAlphaBoundsMm: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly drawBoundsMm: PolygonBounds;
+  readonly canvasBoundsMm: PolygonBounds;
+  readonly overflowMm: {
+    readonly left: number;
+    readonly right: number;
+    readonly top: number;
+    readonly bottom: number;
+  };
+}
+
+const BOUNDS_EPSILON_MM = 1e-7;
 
 export function fabricSlug(fabric: string): string {
   return fabric.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -73,6 +121,67 @@ export function physicalArtworkHeight(
   }
 
   return heightMm;
+}
+
+function sourceCropForDefinition(
+  definition: BatchPieceDefinition,
+  bounds?: AlphaPixelBounds,
+): SourceCrop {
+  const pixelBounds = bounds ?? {
+    x: 0,
+    y: 0,
+    width: definition.sourceWidthPx,
+    height: definition.sourceHeightPx,
+  };
+  const valid =
+    [pixelBounds.x, pixelBounds.y, pixelBounds.width, pixelBounds.height]
+      .every(Number.isFinite) &&
+    Number.isInteger(pixelBounds.x) &&
+    Number.isInteger(pixelBounds.y) &&
+    Number.isInteger(pixelBounds.width) &&
+    Number.isInteger(pixelBounds.height) &&
+    pixelBounds.x >= 0 &&
+    pixelBounds.y >= 0 &&
+    pixelBounds.width > 0 &&
+    pixelBounds.height > 0 &&
+    pixelBounds.x + pixelBounds.width <= definition.sourceWidthPx &&
+    pixelBounds.y + pixelBounds.height <= definition.sourceHeightPx;
+
+  if (!valid) {
+    throw new Error('Bounds alpha inválidos: ' + pieceDefinitionLabel(definition));
+  }
+
+  const scaleX = definition.physicalWidthMm / definition.sourceWidthPx;
+  const scaleY = definition.physicalHeightMm / definition.sourceHeightPx;
+  return {
+    xPx: pixelBounds.x,
+    yPx: pixelBounds.y,
+    widthPx: pixelBounds.width,
+    heightPx: pixelBounds.height,
+    xMm: pixelBounds.x * scaleX,
+    yMm: pixelBounds.y * scaleY,
+    widthMm: pixelBounds.width * scaleX,
+    heightMm: pixelBounds.height * scaleY,
+  };
+}
+
+function placedSourceCropBounds(
+  crop: SourceCrop,
+  placement: PolygonPlacement,
+  translateX: number,
+  translateY: number,
+) {
+  return getPolygonBounds(
+    [
+      { x: crop.xMm, y: crop.yMm },
+      { x: crop.xMm + crop.widthMm, y: crop.yMm },
+      { x: crop.xMm + crop.widthMm, y: crop.yMm + crop.heightMm },
+      { x: crop.xMm, y: crop.yMm + crop.heightMm },
+    ].map((point) => {
+      const rotated = rotatePoint(point, placement.rotation);
+      return { x: rotated.x + translateX, y: rotated.y + translateY };
+    }),
+  );
 }
 
 function stableNumber(value: number): string {
@@ -183,8 +292,109 @@ export function deduplicateExportLayouts(
   return result;
 }
 
+interface PlacedArtworkBounds {
+  readonly pieceId: string;
+  readonly art: ArtworkPlacement;
+  readonly crop: SourceCrop;
+  readonly bounds: PolygonBounds;
+}
+
+function physicalCanvasBounds(profile: CanvasProfile): PolygonBounds {
+  return {
+    minX: 0,
+    minY: 0,
+    maxX: PRODUCTIVE_CANVAS_WIDTH_MM,
+    maxY: profile.maxHeight,
+    width: PRODUCTIVE_CANVAS_WIDTH_MM,
+    height: profile.maxHeight,
+  };
+}
+
+function visibleOverflow(
+  bounds: PolygonBounds,
+  canvas: PolygonBounds,
+): PreflightBoundsIssue['overflowMm'] {
+  return {
+    left: Math.max(0, canvas.minX - bounds.minX),
+    right: Math.max(0, bounds.maxX - canvas.maxX),
+    top: Math.max(0, canvas.minY - bounds.minY),
+    bottom: Math.max(0, bounds.maxY - canvas.maxY),
+  };
+}
+
+function dominantOverflow(
+  overflow: PreflightBoundsIssue['overflowMm'],
+): { readonly edge: 'izquierdo' | 'derecho' | 'superior' | 'inferior'; readonly mm: number } {
+  const entries = [
+    { edge: 'izquierdo' as const, mm: overflow.left },
+    { edge: 'derecho' as const, mm: overflow.right },
+    { edge: 'superior' as const, mm: overflow.top },
+    { edge: 'inferior' as const, mm: overflow.bottom },
+  ];
+  return entries.reduce((largest, current) => current.mm > largest.mm ? current : largest);
+}
+
+function pieceIdentity(definition: BatchPieceDefinition): string {
+  if (definition.kind === 'free-png') return definition.fileName;
+  return `${definition.model} · ${definition.size} · ${definition.side === 'front' ? 'FRENTE' : 'DORSO'}`;
+}
+
+function createBoundsIssue(
+  fabric: string,
+  layoutIndex: number,
+  record: PlacedArtworkBounds,
+  profile: CanvasProfile,
+): PreflightBoundsIssue {
+  const { art, crop, bounds, pieceId } = record;
+  const canvasBoundsMm = physicalCanvasBounds(profile);
+  const overflowMm = visibleOverflow(bounds, canvasBoundsMm);
+  const dominant = dominantOverflow(overflowMm);
+  const definition = art.definition;
+  const message =
+    `Canvas ${layoutIndex + 1} · ${pieceIdentity(definition)}: ` +
+    `el contenido visible excede ${dominant.mm.toLocaleString('es-AR', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 3,
+    })} mm por el borde ${dominant.edge}.`;
+
+  return {
+    kind: 'visible-bounds-overflow',
+    message,
+    fabric,
+    canvasIndex: layoutIndex + 1,
+    instanceId: pieceId,
+    definitionId: definition.id,
+    design: pieceDefinitionLabel(definition),
+    ...(definition.kind === 'garment'
+      ? { size: definition.size, side: definition.side }
+      : {}),
+    rotation: art.placement.rotation,
+    placement: { x: art.placement.x, y: art.placement.y },
+    sourceDimensionsPx: {
+      width: definition.sourceWidthPx,
+      height: definition.sourceHeightPx,
+    },
+    sourceAlphaBoundsPx: {
+      x: crop.xPx,
+      y: crop.yPx,
+      width: crop.widthPx,
+      height: crop.heightPx,
+    },
+    sourceAlphaBoundsMm: {
+      x: crop.xMm,
+      y: crop.yMm,
+      width: crop.widthMm,
+      height: crop.heightMm,
+    },
+    drawBoundsMm: bounds,
+    canvasBoundsMm,
+    overflowMm,
+  };
+}
+
 export function preflightBatch(batch: PreparedBatch): PreflightReport {
   const errors: string[] = [];
+  const boundsIssues: PreflightBoundsIssue[] = [];
   const warnings = [
   'Preflight sobre contornos simplificados: revisá los bordes e islas de alpha antes de producir.',
 ];
@@ -211,7 +421,7 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
     pairing.set(key, pair);
   }
   for (const [key, count] of pairing) if (count.front !== count.back) errors.push('Frente/dorso incompletos ' + key + ': ' + count.front + '/' + count.back + '.');
-  if (errors.length) return { errors, warnings, layouts };
+  if (errors.length) return { errors, warnings, layouts, boundsIssues };
   const expected = new Map(expandPieceDefinitions(batch.definitions).map(p => [p.id, p]));
   const definitionsById = new Map(batch.definitions.map(d => [d.id, d]));
   const extraCopies = new Map<string, Set<number>>();
@@ -239,7 +449,8 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
         errors.push('El relleno alteró el material requerido o creó un canvas.');
       }
       const arts: ArtworkPlacement[] = [];
-      const actualPolygons: Polygon[] = [];
+      const artworkBoundsRecords: PlacedArtworkBounds[] = [];
+      const actualPolygons: (readonly Polygon[])[] = [];
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const piece of layout.pieces) {
         let d: BatchPieceDefinition | undefined;
@@ -265,40 +476,115 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
         if (!getAllowedRotationsForPiece(d).includes(piece.placement.rotation) ||
             !Number.isFinite(piece.placement.x) || !Number.isFinite(piece.placement.y)) { errors.push('Posición/rotación inválida: ' + piece.pieceId); continue; }
         const transformed = transformPolygon(polygon, piece.placement);
+        const collisionPolygon =
+          batch.collisionPolygons?.get(d.id) ?? polygon;
+        const transformedCollision = transformPolygon(
+          collisionPolygon,
+          piece.placement,
+        );
         if (piece.extra && !polygonFitsInsideCanvas(transformed, { width: profile.maxWidth, height: requiredHeight })) {
           errors.push('Relleno fuera de la altura requerida: ' + piece.pieceId);
         }
-        actualPolygons.push(transformed);
+        actualPolygons.push(
+          piece.collisionComponents ?? [transformedCollision],
+        );
         if (!polygonFitsInsideCanvas(transformed, { width: profile.maxWidth, height: profile.maxHeight })) errors.push('Pieza fuera del canvas: ' + piece.pieceId);
-        const rotated = getPolygonBounds(polygon.map(p => rotatePoint(p, piece.placement.rotation)));
-        const tx = piece.placement.x - rotated.minX, ty = piece.placement.y - rotated.minY;
-        const full = [{x:0,y:0},{x:d.physicalWidthMm,y:0},{x:d.physicalWidthMm,y:d.physicalHeightMm},{x:0,y:d.physicalHeightMm}]
-          .map(p => { const r = rotatePoint(p, piece.placement.rotation); return {x:r.x+tx,y:r.y+ty}; });
-        const bounds = getPolygonBounds(full);
+        let sourceCrop: SourceCrop;
+        let tx: number;
+        let ty: number;
+        try {
+          sourceCrop = sourceCropForDefinition(
+            d,
+            batch.sourceAlphaBounds?.get(d.id),
+          );
+          const sourcePlacementBounds = batch.sourcePlacementBounds?.get(d.id);
+          if (sourcePlacementBounds) {
+            const placementAnchor = sourceCropForDefinition(
+              d,
+              sourcePlacementBounds,
+            );
+            const rotatedAnchor = placedSourceCropBounds(
+              placementAnchor,
+              piece.placement,
+              0,
+              0,
+            );
+            tx = piece.placement.x - rotatedAnchor.minX;
+            ty = piece.placement.y - rotatedAnchor.minY;
+          } else {
+            const rotated = getPolygonBounds(
+              polygon.map((point) =>
+                rotatePoint(point, piece.placement.rotation),
+              ),
+            );
+            tx = piece.placement.x - rotated.minX;
+            ty = piece.placement.y - rotated.minY;
+          }
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+          continue;
+        }
+        const bounds = placedSourceCropBounds(
+          sourceCrop,
+          piece.placement,
+          tx,
+          ty,
+        );
         if (piece.extra && (bounds.minY < requiredMinY || bounds.maxY > requiredMaxY)) {
           errors.push('El PNG de relleno aumenta la altura del PDF: ' + piece.pieceId);
         }
         minX = Math.min(minX, bounds.minX); minY = Math.min(minY, bounds.minY);
         maxX = Math.max(maxX, bounds.maxX); maxY = Math.max(maxY, bounds.maxY);
-        arts.push({ definition:d, placement:piece.placement, translateX:tx, translateY:ty, ...(piece.extra ? { extra: piece.extra } : {}) });
+        const art: ArtworkPlacement = { definition:d, placement:piece.placement, translateX:tx, translateY:ty, sourceCrop, ...(piece.extra ? { extra: piece.extra } : {}) };
+        arts.push(art);
+        artworkBoundsRecords.push({
+          pieceId: piece.pieceId,
+          art,
+          crop: sourceCrop,
+          bounds,
+        });
       }
       for (let a = 0; a < actualPolygons.length; a++) for (let b = a+1; b < actualPolygons.length; b++) {
-        if (polygonsOverlap(actualPolygons[a]!, actualPolygons[b]!)) errors.push(result.fabric + ': colisión en canvas ' + (layout.index + 1));
+        if (componentsOverlap(actualPolygons[a]!, actualPolygons[b]!)) errors.push(result.fabric + ': colisión en canvas ' + (layout.index + 1));
       }
-      // Include complete source rectangles: transparent margins cannot silently clip artwork.
-      const widthMm = maxX - minX, heightMm = maxY - minY;
-      if (!(widthMm > 0 && heightMm > 0) || widthMm > profile.maxWidth + 1e-7 || heightMm > profile.maxHeight + 1e-7) {
-        errors.push(result.fabric + ': el arte completo, incluidos márgenes PNG, excede el perfil. Recortá márgenes o revisá la calibración.');
+      // Keep the productive width fixed. The crop uses the same printable-alpha
+      // threshold as nesting and still envelopes every island above that threshold.
+      const contentWidthMm = maxX - minX;
+      const widthMm = PRODUCTIVE_CANVAS_WIDTH_MM, heightMm = maxY - minY;
+      const offsetX = minX < 0 ? minX : Math.max(0, maxX - widthMm);
+      if (!(contentWidthMm > 0 && heightMm > 0)) {
+        errors.push(`Canvas ${layout.index + 1}: dimensiones visibles inválidas.`);
+        continue;
+      }
+      if (contentWidthMm > widthMm + BOUNDS_EPSILON_MM || heightMm > profile.maxHeight + BOUNDS_EPSILON_MM) {
+        const issues = artworkBoundsRecords
+          .map((record) => createBoundsIssue(result.fabric, layout.index, record, profile))
+          .filter((issue) => Math.max(
+            issue.overflowMm.left,
+            issue.overflowMm.right,
+            issue.overflowMm.top,
+            issue.overflowMm.bottom,
+          ) > BOUNDS_EPSILON_MM);
+        if (issues.length) {
+          for (const issue of issues) {
+            boundsIssues.push(issue);
+            errors.push(issue.message);
+          }
+        } else {
+          errors.push(
+            `Canvas ${layout.index + 1}: el contenido visible excede el perfil físico.`,
+          );
+        }
         continue;
       }
       const base = fabricSlug(result.fabric);
       const index = names.get(base) ?? 0; names.set(base, index+1);
       const widthPx = Math.max(1, Math.round(widthMm * PX_PER_MM));
       const heightPx = Math.max(1, Math.round(heightMm * PX_PER_MM));
-      if (widthPx > Math.floor(profile.maxWidth * PX_PER_MM) || heightPx > Math.floor(profile.maxHeight * PX_PER_MM)) {
+      if (widthPx > Math.floor(PRODUCTIVE_CANVAS_WIDTH_MM * PX_PER_MM) || heightPx > Math.floor(profile.maxHeight * PX_PER_MM)) {
         errors.push('El redondeo raster excede el perfil; dejá al menos 0,1 mm de margen.'); continue;
       }
-      layouts.push({name: base + '_1_copia' + letterSuffix(index) + '.png', fabric:result.fabric, widthMm,heightMm,widthPx,heightPx,offsetX:minX,offsetY:minY,pieces:arts});
+      layouts.push({name: base + '_1_copia' + letterSuffix(index) + '.png', fabric:result.fabric, widthMm,heightMm,widthPx,heightPx,offsetX,offsetY:minY,pieces:arts});
     }
   }
   for (const id of expected.keys()) {
@@ -329,5 +615,6 @@ return {
   errors: [...new Set(errors)],
   warnings: [...new Set(warnings)],
   layouts: deduplicatedLayouts,
+  boundsIssues,
 };
 }

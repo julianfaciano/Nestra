@@ -19,12 +19,20 @@ export const PROFILE_BLOCKS = [
 ] as const;
 export type ProfileBlock = (typeof PROFILE_BLOCKS)[number];
 
+const AUDIT_PROFILE_BLOCKS = [
+  'candidateKey',
+  'fineCandidatePolygon',
+  'contact',
+] as const;
+type AuditProfileBlock = (typeof AUDIT_PROFILE_BLOCKS)[number];
+type InternalProfileBlock = ProfileBlock | AuditProfileBlock;
+
 export interface NestingProfile {
   sampleEvery: number;
   totalMs: number;
   /** Signed residual: sampling error can make this negative. */
   unclassifiedMs: number;
-  timings: Record<ProfileBlock, BlockTiming>;
+  timings: Record<InternalProfileBlock, BlockTiming>;
   counters: {
     coordinateSets: number;
     xCoordinates: number;
@@ -50,11 +58,11 @@ export function createNestingProfile(): NestingProfile {
     totalMs: 0,
     unclassifiedMs: 0,
     timings: Object.fromEntries(
-      PROFILE_BLOCKS.map((key) => [
+      [...PROFILE_BLOCKS, ...AUDIT_PROFILE_BLOCKS].map((key) => [
         key,
         { calls: 0, samples: 0, sampledMs: 0, estimatedMs: 0 },
       ]),
-    ) as Record<ProfileBlock, BlockTiming>,
+    ) as Record<InternalProfileBlock, BlockTiming>,
     counters: {
       coordinateSets: 0,
       xCoordinates: 0,
@@ -78,7 +86,7 @@ export function createNestingProfile(): NestingProfile {
 /** No allocations/closures per measured operation; no clocks in segment loops. */
 export function startBlock(
   profile: NestingProfile | undefined,
-  key: ProfileBlock,
+  key: InternalProfileBlock,
 ): number {
   if (!profile) return -1;
   const timing = profile.timings[key];
@@ -98,7 +106,7 @@ export function startBlock(
 
 export function endBlock(
   profile: NestingProfile | undefined,
-  key: ProfileBlock,
+  key: InternalProfileBlock,
   start: number,
 ): void {
   if (start >= 0 && profile)

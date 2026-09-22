@@ -9,6 +9,7 @@ import {
 } from './export-plan';
 
 import { nativePngPlan } from './native-png-export';
+import { prepareExportSourceBlob } from './export-source-crop';
 
 interface PdfDiagnostics {
   readonly path: string;
@@ -79,7 +80,7 @@ export async function exportPdfPrototype(
     const sources =
       new Map<string, number>();
 
-    const definitions =
+    const artworks =
       new Map(
         report.layouts
           .flatMap(
@@ -88,14 +89,15 @@ export async function exportPdfPrototype(
           )
           .map((piece) => [
             piece.definition.id,
-            piece.definition,
+            piece,
           ]),
       );
 
     for (
-      const definition
-      of definitions.values()
+      const artwork
+      of artworks.values()
     ) {
+      const definition = artwork.definition;
       signal.throwIfAborted();
 
       progress(
@@ -113,8 +115,30 @@ export async function exportPdfPrototype(
         );
       }
 
+      const original =
+        typeof response.blob === 'function'
+          ? await response.blob()
+          : new Blob([await response.arrayBuffer()], { type: 'image/png' });
+
+      if (
+        original.size === 0 ||
+        original.size > 64 * 1024 * 1024
+      ) {
+        throw new Error(
+          'Fuente fuera del límite de 64 MiB.',
+        );
+      }
+
+      const prepared =
+        await prepareExportSourceBlob(
+          original,
+          definition,
+          artwork.sourceCrop,
+          signal,
+        );
+
       const bytes =
-        await response.arrayBuffer();
+        await prepared.blob.arrayBuffer();
 
       if (
         bytes.byteLength === 0 ||
@@ -148,9 +172,9 @@ export async function exportPdfPrototype(
         previous &&
         (
           previous.width !==
-            definition.sourceWidthPx ||
+            prepared.width ||
           previous.height !==
-            definition.sourceHeightPx
+            prepared.height
         )
       ) {
         throw new Error(
@@ -183,9 +207,9 @@ export async function exportPdfPrototype(
           {
             source,
             width:
-              definition.sourceWidthPx,
+              prepared.width,
             height:
-              definition.sourceHeightPx,
+              prepared.height,
           },
         );
       }

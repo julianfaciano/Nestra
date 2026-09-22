@@ -36,6 +36,18 @@ it('records a productive run only once for the same optimizationRunId', () => {
   expect(loadHistoricalJobs()).toHaveLength(1);
 });
 
+it('preserves arbitrary fabric names in the historical breakdown', () => {
+  recordOptimizedBatch({
+    optimizationRunId: 'set-run',
+    createdAt: Date.now(),
+    canvasCount: 1,
+    fabrics: [{ fabric: 'set', meters: 1.25 }],
+  });
+  const job = loadHistoricalJobs()[0]!;
+  expect(job.fabrics).toEqual([{ fabric: 'set', meters: 1.25 }]);
+  expect(job.meters.unclassified).toBe(1.25);
+});
+
 it('groups local runs by consecutive gaps of at most ten minutes', () => {
   const start = new Date(2026, 7, 19, 10, 0).getTime();
   const grouped = groupHistoricalJobs([

@@ -6,6 +6,7 @@ import {
 } from 'vitest';
 
 import {
+  buildImportableHistoricalJobs,
   buildImportedHistoricalJob,
   formatHistoricalDate,
   historicalCopiesFromName,
@@ -305,6 +306,20 @@ describe(
         ).toBe('19/Ago/26');
       },
     );
+
+    it.each(['06-Sep-26', '12-Sep-26', '06-sep-26', '06-SEP-26'])(
+      'reconoce carpetas DD-MMM-YY: %s',
+      (value) => {
+        const timestamp = historicalTimestampFromText(value);
+        expect(timestamp).toBeDefined();
+        expect(formatHistoricalDate(timestamp ?? 0)).toMatch(/\/Sep\/26$/);
+      },
+    );
+
+    it.each(['31-Feb-26', '99-Sep-26', 'Mis pedidos'])(
+      'rechaza fechas o carpetas inválidas: %s',
+      (value) => expect(historicalTimestampFromText(value)).toBeUndefined(),
+    );
   },
 );
 
@@ -573,6 +588,31 @@ describe(
 describe(
   'historical import migration',
   () => {
+    it('acepta DD-MMM-YY en el filtro real de importación y rechaza nombres inválidos', () => {
+      const nativeJobs = [
+        '06-Sep-26',
+        '06-SEP-26',
+        '06-sep-26',
+        '31-Feb-26',
+        'foo',
+        '06-XYZ-26',
+      ].map((name) => ({
+        name,
+        path: `C:\\historial\\${name}`,
+        files: [historicalFile('TELA DEPORTIVA 1 copia.pdf', 100)],
+      }));
+
+      const imported = buildImportableHistoricalJobs(nativeJobs);
+
+      expect(imported.map((job) => job.name)).toEqual([
+        '06-Sep-26',
+        '06-SEP-26',
+        '06-sep-26',
+      ]);
+      expect(imported.every((job) => job.createdAt > 0)).toBe(true);
+      expect(imported.every((job) => job.importedHistorical)).toBe(true);
+    });
+
     it(
       'recalcula métricas importadas desde los archivos aunque haya valores viejos guardados',
       () => {

@@ -127,6 +127,7 @@ beforeEach(() => {
     errors: [],
     warnings: [],
     layouts: [layout],
+    boundsIssues: [],
   });
 
   vi.stubGlobal('crypto', webcrypto);
@@ -330,6 +331,7 @@ describe(
           errors: [],
           warnings: [],
           layouts: [layout, other],
+          boundsIssues: [],
         });
 
         await exportBatchPng(
@@ -376,6 +378,7 @@ describe(
           errors: [],
           warnings: [],
           layouts: [layout, second],
+          boundsIssues: [],
         });
 
         vi.mocked(invoke).mockImplementation(

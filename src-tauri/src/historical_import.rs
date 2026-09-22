@@ -1,3 +1,4 @@
+use crate::historical_import_paths::{historical_job_directories, is_supported_historical_file};
 use image::codecs::jpeg::JpegEncoder;
 use image::{ExtendedColorType, ImageReader, Rgb, RgbImage};
 use serde::Serialize;
@@ -362,18 +363,7 @@ fn collect_historical_jobs(
 ) -> Result<Vec<HistoricalJob>, String> {
     let mut jobs = Vec::new();
 
-    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-
-        let path = entry.path();
-
-        if !path.is_dir() {
-            continue;
-        }
-
+    for path in historical_job_directories(root)? {
         let mut files = Vec::new();
 
         let Ok(children) = fs::read_dir(&path) else {
@@ -383,17 +373,13 @@ fn collect_historical_jobs(
         for child in children.flatten() {
             let p = child.path();
 
-            if !p.is_file() {
-                continue;
-            }
-
             let extension = p
                 .extension()
                 .and_then(|value| value.to_str())
                 .unwrap_or("")
                 .to_lowercase();
 
-            if !matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "pdf") {
+            if !is_supported_historical_file(&p) {
                 continue;
             }
 

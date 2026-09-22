@@ -142,4 +142,19 @@ describe('design collection state', () => {
       'T10-DORSO.png',
     );
   });
+
+  it('construye una colección completa con nombres humanos y toma su base', () => {
+    const files = Array.from({ length: 10 }, (_, index) => index + 1).flatMap(
+      (size) => [
+        createFolderFile(`Adoptame t${size} frente.png`, 'Importación'),
+        createFolderFile(`Adoptame T${size} DORSO.PNG`, 'Importación'),
+      ],
+    );
+    const collection = buildDesignCollection(files, 'adoptame');
+
+    expect(collection.name).toBe('Adoptame');
+    expect(collection.assets).toHaveLength(20);
+    expect(collection.missing).toHaveLength(0);
+    expect(isCollectionComplete(collection)).toBe(true);
+  });
 });
