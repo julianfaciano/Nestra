@@ -5,6 +5,61 @@ const EPSILON = 1e-9;
 const SAMPLE_EPSILON = 1e-5;
 const USE_SEGMENT_AABB = true;
 
+/** Opt-in counters and sampled timings for REQUIRED exact polygon collision. */
+export interface PolygonCollisionDiagnostics {
+  exactCollisionCalls: number;
+  exactCollisionEarlyRejects: number;
+  exactCollisionSegmentPairCandidates: number;
+  exactCollisionSegmentPairAabbRejects: number;
+  exactCollisionSegmentPairTests: number;
+  exactCollisionSegmentIntersections: number;
+  exactCollisionContainmentTests: number;
+  exactCollisionBoundsSampledMs: number;
+  exactCollisionSegmentSampledMs: number;
+  exactCollisionContainmentSampledMs: number;
+  exactCollisionTotalSampledMs: number;
+  exactCollisionBoundsSamples: number;
+  exactCollisionSegmentSamples: number;
+  exactCollisionContainmentSamples: number;
+  exactCollisionTimingSamples: number;
+  exactCollisionTemporaryPolygonMaterializations: number;
+  exactCollisionVerticesMaterialized: number;
+  exactCollisionTranslatedBoundsMaterializations: number;
+  exactCollisionCandidateScratchArrays: number;
+  exactCollisionTemporaryPointObjects: number;
+  exactCollisionMaterializationSampledMs: number;
+  exactCollisionMaterializationSamples: number;
+}
+
+export function createPolygonCollisionDiagnostics(): PolygonCollisionDiagnostics {
+  return {
+    exactCollisionCalls: 0,
+    exactCollisionEarlyRejects: 0,
+    exactCollisionSegmentPairCandidates: 0,
+    exactCollisionSegmentPairAabbRejects: 0,
+    exactCollisionSegmentPairTests: 0,
+    exactCollisionSegmentIntersections: 0,
+    exactCollisionContainmentTests: 0,
+    exactCollisionBoundsSampledMs: 0,
+    exactCollisionSegmentSampledMs: 0,
+    exactCollisionContainmentSampledMs: 0,
+    exactCollisionTotalSampledMs: 0,
+    exactCollisionBoundsSamples: 0,
+    exactCollisionSegmentSamples: 0,
+    exactCollisionContainmentSamples: 0,
+    exactCollisionTimingSamples: 0,
+    exactCollisionTemporaryPolygonMaterializations: 0,
+    exactCollisionVerticesMaterialized: 0,
+    exactCollisionTranslatedBoundsMaterializations: 0,
+    exactCollisionCandidateScratchArrays: 0,
+    exactCollisionTemporaryPointObjects: 0,
+    exactCollisionMaterializationSampledMs: 0,
+    exactCollisionMaterializationSamples: 0,
+  };
+}
+
+const DIAGNOSTIC_SAMPLE_MASK = 127;
+
 function crossProduct(a: Point2D, b: Point2D, c: Point2D): number {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
@@ -16,6 +71,19 @@ export function boundsOverlapWithArea(
   return (
     Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX) > EPSILON &&
     Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY) > EPSILON
+  );
+}
+
+/** Same strict-area predicate as boundsOverlapWithArea with an offset on `a`. */
+export function boundsOverlapWithAreaTranslated(
+  a: PolygonBounds,
+  offsetX: number,
+  offsetY: number,
+  b: PolygonBounds,
+): boolean {
+  return (
+    Math.min(a.maxX + offsetX, b.maxX) - Math.max(a.minX + offsetX, b.minX) > EPSILON &&
+    Math.min(a.maxY + offsetY, b.maxY) - Math.max(a.minY + offsetY, b.minY) > EPSILON
   );
 }
 
@@ -115,6 +183,7 @@ function getCollinearOverlapMidpoint(
   a2: Point2D,
   b1: Point2D,
   b2: Point2D,
+  diagnostics?: PolygonCollisionDiagnostics,
 ): Point2D | null {
   if (
     Math.abs(crossProduct(a1, a2, b1)) > EPSILON ||
@@ -150,6 +219,7 @@ function getCollinearOverlapMidpoint(
 
     const t = (overlapValue - a1.x) / dx;
 
+    if (diagnostics) diagnostics.exactCollisionTemporaryPointObjects++;
     return {
       x: overlapValue,
       y: a1.y + t * dy,
@@ -162,10 +232,20 @@ function getCollinearOverlapMidpoint(
 
   const t = (overlapValue - a1.y) / dy;
 
+  if (diagnostics) diagnostics.exactCollisionTemporaryPointObjects++;
   return {
     x: a1.x + t * dx,
     y: overlapValue,
   };
+}
+
+function countedStrictContainment(
+  point: Point2D,
+  polygon: Polygon,
+  diagnostics?: PolygonCollisionDiagnostics,
+): boolean {
+  if (diagnostics) diagnostics.exactCollisionContainmentTests++;
+  return pointIsStrictlyInsidePolygon(point, polygon);
 }
 
 function collinearEdgesCreateAreaOverlap(
@@ -175,8 +255,9 @@ function collinearEdgesCreateAreaOverlap(
   b2: Point2D,
   first: Polygon,
   second: Polygon,
+  diagnostics?: PolygonCollisionDiagnostics,
 ): boolean {
-  const midpoint = getCollinearOverlapMidpoint(a1, a2, b1, b2);
+  const midpoint = getCollinearOverlapMidpoint(a1, a2, b1, b2, diagnostics);
 
   if (!midpoint) {
     return false;
@@ -193,6 +274,7 @@ function collinearEdgesCreateAreaOverlap(
   const normalX = -dy / length;
   const normalY = dx / length;
 
+  if (diagnostics) diagnostics.exactCollisionTemporaryPointObjects += 2;
   const sampleA: Point2D = {
     x: midpoint.x + normalX * SAMPLE_EPSILON,
     y: midpoint.y + normalY * SAMPLE_EPSILON,
@@ -204,12 +286,12 @@ function collinearEdgesCreateAreaOverlap(
   };
 
   const sampleAInsideBoth =
-    pointIsStrictlyInsidePolygon(sampleA, first) &&
-    pointIsStrictlyInsidePolygon(sampleA, second);
+    countedStrictContainment(sampleA, first, diagnostics) &&
+    countedStrictContainment(sampleA, second, diagnostics);
 
   const sampleBInsideBoth =
-    pointIsStrictlyInsidePolygon(sampleB, first) &&
-    pointIsStrictlyInsidePolygon(sampleB, second);
+    countedStrictContainment(sampleB, first, diagnostics) &&
+    countedStrictContainment(sampleB, second, diagnostics);
 
   return sampleAInsideBoth || sampleBInsideBoth;
 }
@@ -219,6 +301,7 @@ function polygonsHaveAreaIntersection(
   second: Polygon,
   candidates?: (a: Point2D, b: Point2D) => readonly number[],
   indexedBounds?: PolygonBounds,
+  diagnostics?: PolygonCollisionDiagnostics,
 ): boolean {
   for (let firstIndex = 0; firstIndex < first.length; firstIndex += 1) {
     const firstStart = first[firstIndex];
@@ -246,16 +329,22 @@ function polygonsHaveAreaIntersection(
         continue;
       }
 
+      if (diagnostics) diagnostics.exactCollisionSegmentPairCandidates++;
+
 if (
   USE_SEGMENT_AABB &&
   !segmentBoundsMayIntersect(firstStart, firstEnd, secondStart, secondEnd)
 ) {
+  if (diagnostics) diagnostics.exactCollisionSegmentPairAabbRejects++;
   continue;
 }
+
+      if (diagnostics) diagnostics.exactCollisionSegmentPairTests++;
 
       if (
         segmentsProperlyIntersect(firstStart, firstEnd, secondStart, secondEnd)
       ) {
+        if (diagnostics) diagnostics.exactCollisionSegmentIntersections++;
         return true;
       }
 
@@ -267,8 +356,10 @@ if (
           secondEnd,
           first,
           second,
+          diagnostics,
         )
       ) {
+        if (diagnostics) diagnostics.exactCollisionSegmentIntersections++;
         return true;
       }
     }
@@ -284,8 +375,27 @@ export function polygonsOverlap(
   secondBounds?: PolygonBounds,
   candidates?: (a: Point2D, b: Point2D) => readonly number[],
   contains = pointIsStrictlyInsidePolygon,
+  diagnostics?: PolygonCollisionDiagnostics,
 ): boolean {
+  let callStartedAt = 0;
+  let sampled = false;
+  if (diagnostics) {
+    diagnostics.exactCollisionCalls++;
+    sampled = (diagnostics.exactCollisionCalls & DIAGNOSTIC_SAMPLE_MASK) === 1;
+    if (sampled) {
+      diagnostics.exactCollisionTimingSamples++;
+      callStartedAt = performance.now();
+    }
+  }
+
   if (first.length < 3 || second.length < 3) {
+    if (diagnostics) diagnostics.exactCollisionEarlyRejects++;
+    if (sampled) {
+      const elapsed = performance.now() - callStartedAt;
+      diagnostics!.exactCollisionBoundsSampledMs += elapsed;
+      diagnostics!.exactCollisionBoundsSamples++;
+      diagnostics!.exactCollisionTotalSampledMs += elapsed;
+    }
     return false;
   }
 
@@ -293,16 +403,35 @@ export function polygonsOverlap(
    * Si los bounding boxes no comparten área positiva,
    * las piezas como máximo se están tocando.
    */
-  if (
-    !boundsOverlapWithArea(
+  const boundsStartedAt = sampled ? performance.now() : 0;
+  const boundsOverlap = boundsOverlapWithArea(
       firstBounds ?? getPolygonBounds(first),
       secondBounds ?? getPolygonBounds(second),
-    )
-  ) {
+    );
+  if (sampled) {
+    diagnostics!.exactCollisionBoundsSampledMs += performance.now() - boundsStartedAt;
+    diagnostics!.exactCollisionBoundsSamples++;
+  }
+  if (!boundsOverlap) {
+    if (diagnostics) diagnostics.exactCollisionEarlyRejects++;
+    if (sampled) diagnostics!.exactCollisionTotalSampledMs += performance.now() - callStartedAt;
     return false;
   }
 
-if (polygonsHaveAreaIntersection(first, second, candidates, candidates ? secondBounds : undefined)) {
+  const segmentStartedAt = sampled ? performance.now() : 0;
+  const hasAreaIntersection = polygonsHaveAreaIntersection(
+    first,
+    second,
+    candidates,
+    candidates ? secondBounds : undefined,
+    diagnostics,
+  );
+  if (sampled) {
+    diagnostics!.exactCollisionSegmentSampledMs += performance.now() - segmentStartedAt;
+    diagnostics!.exactCollisionSegmentSamples++;
+  }
+  if (hasAreaIntersection) {
+    if (sampled) diagnostics!.exactCollisionTotalSampledMs += performance.now() - callStartedAt;
     return true;
   }
 
@@ -310,10 +439,20 @@ if (polygonsHaveAreaIntersection(first, second, candidates, candidates ? secondB
    * Detecta también cuando una forma está completamente
    * contenida dentro de la otra.
    */
+  const containmentStartedAt = sampled ? performance.now() : 0;
+  const testContainment = (point: Point2D, polygon: Polygon): boolean => {
+    if (diagnostics) diagnostics.exactCollisionContainmentTests++;
+    return contains(point, polygon);
+  };
   for (const point of first) {
     if (candidates && secondBounds && (point.x < secondBounds.minX-EPSILON || point.x > secondBounds.maxX+EPSILON ||
       point.y < secondBounds.minY-EPSILON || point.y > secondBounds.maxY+EPSILON)) continue;
-    if (contains(point, second)) {
+    if (testContainment(point, second)) {
+      if (sampled) {
+        diagnostics!.exactCollisionContainmentSampledMs += performance.now() - containmentStartedAt;
+        diagnostics!.exactCollisionContainmentSamples++;
+        diagnostics!.exactCollisionTotalSampledMs += performance.now() - callStartedAt;
+      }
       return true;
     }
   }
@@ -321,11 +460,21 @@ if (polygonsHaveAreaIntersection(first, second, candidates, candidates ? secondB
   for (const point of second) {
     if (candidates && firstBounds && (point.x < firstBounds.minX-EPSILON || point.x > firstBounds.maxX+EPSILON ||
       point.y < firstBounds.minY-EPSILON || point.y > firstBounds.maxY+EPSILON)) continue;
-    if (contains(point, first)) {
+    if (testContainment(point, first)) {
+      if (sampled) {
+        diagnostics!.exactCollisionContainmentSampledMs += performance.now() - containmentStartedAt;
+        diagnostics!.exactCollisionContainmentSamples++;
+        diagnostics!.exactCollisionTotalSampledMs += performance.now() - callStartedAt;
+      }
       return true;
     }
   }
 
+  if (sampled) {
+    diagnostics!.exactCollisionContainmentSampledMs += performance.now() - containmentStartedAt;
+    diagnostics!.exactCollisionContainmentSamples++;
+    diagnostics!.exactCollisionTotalSampledMs += performance.now() - callStartedAt;
+  }
   return false;
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Polygon } from './polygon';
-import { polygonsOverlap, createIndexedPolygonOverlap } from './polygon-collision';
+import { boundsOverlapWithArea, boundsOverlapWithAreaTranslated, polygonsOverlap, createIndexedPolygonOverlap } from './polygon-collision';
 import {
   getPolygonBounds,
   polygonPixelsToMillimeters,
@@ -14,6 +14,28 @@ const square: Polygon = [
   { x: 100, y: 100 },
   { x: 0, y: 100 },
 ];
+
+it('matches translated component AABB checks to explicitly shifted bounds', () => {
+  const cases: readonly [Polygon, number, number, Polygon][] = [
+    [square, 100, 0, square],
+    [square, 99.9999999995, 0, square],
+    [square, 99.5, 50, square],
+    [square, -100, -100, square],
+    [square, 12.25, 27.75, [{x:20,y:20},{x:40,y:20},{x:40,y:40},{x:20,y:40}]],
+  ];
+  for (const [source, x, y, target] of cases) {
+    const local = getPolygonBounds(source);
+    const shifted = {
+      ...local,
+      minX: local.minX + x,
+      maxX: local.maxX + x,
+      minY: local.minY + y,
+      maxY: local.maxY + y,
+    };
+    expect(boundsOverlapWithAreaTranslated(local, x, y, getPolygonBounds(target)))
+      .toBe(boundsOverlapWithArea(shifted, getPolygonBounds(target)));
+  }
+});
 
 it('indexed filler collision matches the reference for touching, overlap, containment and concavity', () => {
   const indexed = createIndexedPolygonOverlap();

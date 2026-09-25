@@ -8,10 +8,10 @@ import {
 import { polygonFitsInsideCanvas } from './canvas-geometry';
 import type { Polygon } from './polygon';
 import { polygonsTouch, createIndexedPolygonTouch, localContourSnaps } from './polygon-contact';
-import { componentEnvelope, componentsOverlap, transformComponents } from './polygon-components';
+import { componentEnvelope, transformComponents } from './polygon-components';
 import { artworkBounds, prepareArtworkBounds, placeArtworkBounds } from './artwork-bounds';
 import { extraPieceId, type ExtraPieceIdentity, type FillerRequest } from './filler-types';
-import { boundsOverlapWithArea, polygonsOverlap, createIndexedPolygonOverlap, createPolygonSegmentQuery } from './polygon-collision';
+import { boundsOverlapWithArea, boundsOverlapWithAreaTranslated, polygonsOverlap, createIndexedPolygonOverlap, createPolygonSegmentQuery, createPolygonCollisionDiagnostics, type PolygonCollisionDiagnostics } from './polygon-collision';
 import {
   getPolygonBounds,
   transformPolygon,
@@ -45,6 +45,8 @@ export interface MultiNestingInput {
   readonly diagnosticProfiling?: boolean;
   /** Test/benchmark-only detailed REQUIRED search diagnostics. */
   readonly diagnosticRequiredScale?: boolean;
+  /** Opt-in exact history tracking; retains emitted candidate keys for benchmarks only. */
+  readonly diagnosticRequiredEnumeration?: boolean;
 /** Lightweight phase timing: only two wall-clock measurements per run. */
 readonly diagnosticPhaseTiming?: boolean;
 }
@@ -131,6 +133,7 @@ function validateInput(input: MultiNestingInput): void {
 export interface NestingDiagnostics {
   profile?: NestingProfile;
   requiredPieces?: RequiredPieceDiagnostics[];
+  polygonCollision: PolygonCollisionDiagnostics;
   requiredMs: number;
   fillerMs: number;
   requiredFailedVersionHits: number;
@@ -143,6 +146,55 @@ export interface NestingDiagnostics {
   layoutsCreated: number;
   placedCount: number;
   candidateCacheHits: number;
+  /** REQUIRED-only component geometry translations materialized for candidate offsets. */
+  componentTranslations: number;
+  /** Expanded REQUIRED instances carrying alpha collision components. */
+  piecesUsingCollisionComponents: number;
+  /** REQUIRED candidates that make at least one component-level overlap call. */
+  candidatesEnteringComponentPath: number;
+  /** REQUIRED component counters; pairs count only pairs reached before short-circuit. */
+  componentsOverlapCalls: number;
+  componentPairCandidates: number;
+  componentPairAabbRejects: number;
+  /** Component bounds rebuilt inside pair evaluation; excludes precomputed/cached bounds. */
+  componentPairBoundsRecomputed: number;
+  /** Per-component local AABBs created once for each geometry/rotation variant. */
+  componentBoundsPrecomputations: number;
+  componentPairExactChecks: number;
+  componentPairExactCollisions: number;
+  requiredSearchAttempts: number;
+  requiredCandidateEnumerations: number;
+  requiredCandidateFreshEnumerations: number;
+  requiredCandidateHistoricalReenumerations: number;
+  requiredDistinctHistoricalCandidates: number;
+  requiredFirstSearchEnumerations: number;
+  requiredFreshEmissionsFromPreviouslyExistingCoordinates: number;
+  requiredSearchRestartsFromBeginning: number;
+  requiredGridCandidatesEnumerated: number;
+  requiredContactCandidatesEnumerated: number;
+  requiredGridAndContactCandidatesEnumerated: number;
+  requiredOtherCandidatesEnumerated: number;
+  /** Duplicate X- or Y-axis coordinate proposals, counted before Set deduplication. */
+  requiredDuplicateAxisCoordinateProposals: number;
+  /** Duplicate X- or Y-axis coordinate proposals discarded by Set deduplication. */
+  requiredDuplicateAxisCoordinateProposalsSkipped: number;
+  /** Historical emitted candidates already rejected by the monotone cache. */
+  requiredFrontierEligibleHistoricalCandidates: number;
+  requiredCacheHitsWithoutSameIdentityHistory: number;
+  /** Fresh emissions using an X or Y coordinate absent from the prior search. */
+  requiredCandidateNewCoordinateEnumerations: number;
+  requiredNewCoordinateGridCandidates: number;
+  requiredNewCoordinateContactCandidates: number;
+  requiredNewCoordinateGridAndContactCandidates: number;
+  requiredNewCoordinateOtherCandidates: number;
+  /** New coordinate combinations containing an axis coordinate derived from the newest layout piece. */
+  requiredNewCoordinateCandidatesFromLastPiece: number;
+  /** New coordinate combinations reusing an exact contact coordinate seen in earlier attempts. */
+  requiredNewCoordinateCandidatesUsingExistingContacts: number;
+  requiredHistoricalCandidateCacheHits: number;
+  requiredEnumerationUniqueCandidates: number;
+  requiredEnumerationMaxUniqueCandidatesPerSearchIdentityLayout: number;
+  requiredEnumerationStates: number;
 }
 
 export interface RequiredLayoutAttemptDiagnostics {
@@ -180,6 +232,7 @@ export interface RequiredPieceDiagnostics {
 
 interface Variant {
   readonly collisionComponents?: readonly Polygon[];
+  readonly collisionComponentBounds?: readonly PolygonBounds[];
   readonly polygon: Polygon;
   readonly bounds: PolygonBounds;
   readonly finePolygon: Polygon;
@@ -193,6 +246,105 @@ interface InternalPiece extends MultiNestedPiece {
   readonly finePolygon: Polygon;
   readonly fineBounds: PolygonBounds;
   readonly bucketBounds: PolygonBounds;
+  readonly collisionComponentBounds?: readonly PolygonBounds[];
+}
+
+function offsetBounds(bounds: PolygonBounds, x: number, y: number): PolygonBounds {
+  return {
+    minX: bounds.minX + x,
+    minY: bounds.minY + y,
+    maxX: bounds.maxX + x,
+    maxY: bounds.maxY + y,
+    width: bounds.width,
+    height: bounds.height,
+  };
+}
+
+function translatedComponentAt(
+  source: readonly Polygon[],
+  index: number,
+  x: number,
+  y: number,
+  cache: (Polygon | undefined)[],
+  diagnostics: NestingDiagnostics,
+  collisionDiagnostics?: PolygonCollisionDiagnostics,
+): Polygon {
+  let polygon = cache[index];
+  if (!polygon) {
+    const sampleMaterialization = collisionDiagnostics !== undefined &&
+      (collisionDiagnostics.exactCollisionTemporaryPolygonMaterializations & 127) === 0;
+    const materializationStartedAt = sampleMaterialization ? performance.now() : 0;
+    polygon = source[index]!.map(point => ({x: point.x + x, y: point.y + y}));
+    cache[index] = polygon;
+    diagnostics.componentTranslations++;
+    if (collisionDiagnostics) {
+      collisionDiagnostics.exactCollisionTemporaryPolygonMaterializations++;
+      collisionDiagnostics.exactCollisionVerticesMaterialized += polygon.length;
+      if (sampleMaterialization) {
+        collisionDiagnostics.exactCollisionMaterializationSamples++;
+        collisionDiagnostics.exactCollisionMaterializationSampledMs += performance.now() - materializationStartedAt;
+      }
+    }
+  }
+  return polygon;
+}
+
+function translatedComponentBoundsAt(
+  source: readonly PolygonBounds[],
+  index: number,
+  x: number,
+  y: number,
+  cache: (PolygonBounds | undefined)[],
+  diagnostics?: PolygonCollisionDiagnostics,
+): PolygonBounds {
+  let bounds = cache[index];
+  if (!bounds) {
+    bounds = offsetBounds(source[index]!, x, y);
+    cache[index] = bounds;
+    if (diagnostics) diagnostics.exactCollisionTranslatedBoundsMaterializations++;
+  }
+  return bounds;
+}
+
+/** Exact component overlap with cached local bounds and an offset for the moving piece. */
+function componentsOverlapAtOffset(
+  moving: readonly Polygon[],
+  movingBounds: readonly PolygonBounds[],
+  movingBoundsAreLocal: boolean,
+  offsetX: number,
+  offsetY: number,
+  placed: readonly Polygon[],
+  placedBounds: readonly PolygonBounds[],
+  translatedMoving: (Polygon | undefined)[],
+  translatedMovingBounds: (PolygonBounds | undefined)[],
+  diagnostics: NestingDiagnostics,
+  collisionDiagnostics?: PolygonCollisionDiagnostics,
+): boolean {
+  diagnostics.componentsOverlapCalls++;
+  for (let i = 0; i < moving.length; i++) {
+    for (let j = 0; j < placed.length; j++) {
+      diagnostics.componentPairCandidates++;
+      const boundsOverlap = movingBoundsAreLocal
+        ? boundsOverlapWithAreaTranslated(movingBounds[i]!, offsetX, offsetY, placedBounds[j]!)
+        : boundsOverlapWithArea(movingBounds[i]!, placedBounds[j]!);
+      if (!boundsOverlap) {
+        diagnostics.componentPairAabbRejects++;
+        continue;
+      }
+      diagnostics.componentPairExactChecks++;
+      const movingPolygon = movingBoundsAreLocal
+        ? translatedComponentAt(moving, i, offsetX, offsetY, translatedMoving, diagnostics, collisionDiagnostics)
+        : moving[i]!;
+      const movingPolygonBounds = movingBoundsAreLocal
+        ? translatedComponentBoundsAt(movingBounds, i, offsetX, offsetY, translatedMovingBounds, collisionDiagnostics)
+        : movingBounds[i]!;
+      if (polygonsOverlap(movingPolygon, placed[j]!, movingPolygonBounds, placedBounds[j]!, undefined, undefined, collisionDiagnostics)) {
+        diagnostics.componentPairExactCollisions++;
+        return true;
+      }
+    }
+  }
+  return false;
 }
 interface MutableLayout {
   readonly pieces: InternalPiece[];
@@ -201,6 +353,44 @@ interface MutableLayout {
   readonly failedRequiredVersions: Map<object, number>;
   usedWidth: number;
   usedHeight: number;
+}
+
+interface RequiredEnumerationState {
+  readonly emittedCandidates: Map<string, boolean>;
+  readonly xCoordinates: Set<number>;
+  readonly yCoordinates: Set<number>;
+  readonly contactXCoordinates: Set<number>;
+  readonly contactYCoordinates: Set<number>;
+  attempts: number;
+  lastVersion: number;
+}
+
+type RequiredEnumerationContext = WeakMap<MutableLayout, Map<object, RequiredEnumerationState>>;
+
+function getRequiredEnumerationState(
+  context: RequiredEnumerationContext,
+  layout: MutableLayout,
+  searchIdentity: object,
+): RequiredEnumerationState {
+  let byIdentity = context.get(layout);
+  if (!byIdentity) {
+    byIdentity = new Map();
+    context.set(layout, byIdentity);
+  }
+  let state = byIdentity.get(searchIdentity);
+  if (!state) {
+    state = {
+      emittedCandidates: new Map(),
+      xCoordinates: new Set(),
+      yCoordinates: new Set(),
+      contactXCoordinates: new Set(),
+      contactYCoordinates: new Set(),
+      attempts: 0,
+      lastVersion: -1,
+    };
+    byIdentity.set(searchIdentity, state);
+  }
+  return state;
 }
 
 interface FillerCandidate {
@@ -311,20 +501,59 @@ function findPlacementInLayout(
   preferContact: false | 'garment' | 'free-png' = false,
   fillerSearch?: FillerSearch,
   requiredAttempt?: RequiredLayoutAttemptDiagnostics,
+  requiredEnumerationContext?: RequiredEnumerationContext,
+  requiredSearchIdentity?: object,
 ): Omit<InternalPiece, 'pieceId'> | null {
   const profile = diagnostics.profile;
+  if (!fillerSearch && requiredEnumerationContext) diagnostics.requiredSearchAttempts++;
+  const enumerationState = !fillerSearch && requiredEnumerationContext && requiredSearchIdentity
+    ? getRequiredEnumerationState(requiredEnumerationContext, layout, requiredSearchIdentity)
+    : undefined;
+  const priorEnumerationAttempts = enumerationState?.attempts ?? 0;
+  const previousXCoordinates = enumerationState ? new Set(enumerationState.xCoordinates) : undefined;
+  const previousYCoordinates = enumerationState ? new Set(enumerationState.yCoordinates) : undefined;
+  const previousContactXCoordinates = enumerationState ? new Set(enumerationState.contactXCoordinates) : undefined;
+  const previousContactYCoordinates = enumerationState ? new Set(enumerationState.contactYCoordinates) : undefined;
+  if (enumerationState) {
+    if (enumerationState.attempts > 0 && enumerationState.lastVersion !== layout.pieces.length) {
+      diagnostics.requiredSearchRestartsFromBeginning++;
+    }
+    if (enumerationState.attempts === 0) diagnostics.requiredEnumerationStates++;
+    enumerationState.attempts++;
+    enumerationState.lastVersion = layout.pieces.length;
+  }
   const coordinatesStart = startBlock(profile, 'candidateCoordinates');
   // Cross edge coordinates so a right edge and a top edge from different pieces
   // can define a cavity. Both floor and ceil retain grid alignments on either side.
   const xs = new Set<number>([0]);
   const ys = new Set<number>([0]);
-  const add = (set: Set<number>, value: number, limit: number) => {
+  const gridXs = enumerationState ? new Set<number>([0]) : undefined;
+  const gridYs = enumerationState ? new Set<number>([0]) : undefined;
+  const contactXs = enumerationState ? new Set<number>() : undefined;
+  const contactYs = enumerationState ? new Set<number>() : undefined;
+  const lastPieceXs = enumerationState ? new Set<number>() : undefined;
+  const lastPieceYs = enumerationState ? new Set<number>() : undefined;
+  const add = (set: Set<number>, value: number, limit: number, pieceIndex?: number) => {
+    const isX = set === xs;
+    const gridCoordinates = isX ? gridXs : gridYs;
+    const contactCoordinates = isX ? contactXs : contactYs;
+    const lastPieceCoordinates = isX ? lastPieceXs : lastPieceYs;
+    const insert = (coordinate: number, isGrid: boolean, isContact: boolean) => {
+      if (enumerationState && set.has(coordinate)) {
+        diagnostics.requiredDuplicateAxisCoordinateProposals++;
+        diagnostics.requiredDuplicateAxisCoordinateProposalsSkipped++;
+      }
+      set.add(coordinate);
+      if (isGrid) gridCoordinates?.add(coordinate);
+      if (isContact) contactCoordinates?.add(coordinate);
+      if (pieceIndex === layout.pieces.length - 1) lastPieceCoordinates?.add(coordinate);
+    };
     if (preferContact && value >= 0 && value <= limit) {
       if (requiredAttempt) {
-        if (set === xs) requiredAttempt.xCoordinatesProposed++;
+        if (isX) requiredAttempt.xCoordinatesProposed++;
         else requiredAttempt.yCoordinatesProposed++;
       }
-      set.add(value);
+      insert(value, false, pieceIndex !== undefined);
     }
     for (const coordinate of [
       Math.floor(value / step) * step,
@@ -332,24 +561,25 @@ function findPlacementInLayout(
     ]) {
       if (coordinate >= 0 && coordinate <= limit) {
         if (requiredAttempt) {
-          if (set === xs) requiredAttempt.xCoordinatesProposed++;
+          if (isX) requiredAttempt.xCoordinatesProposed++;
           else requiredAttempt.yCoordinatesProposed++;
         }
-        set.add(coordinate);
+        insert(coordinate, true, false);
       }
     }
   };
   const searchTop = Math.ceil(layout.usedHeight / step) * step;
   for (const variant of variants) {
     add(xs, canvas.width - variant.bounds.width, canvas.width);
-    for (const { bounds } of layout.pieces) {
+    for (let pieceIndex = 0; pieceIndex < layout.pieces.length; pieceIndex++) {
+      const { bounds } = layout.pieces[pieceIndex]!;
       for (const edge of [bounds.minX, bounds.maxX]) {
-        add(xs, edge, canvas.width);
-        add(xs, edge - variant.bounds.width, canvas.width);
+        add(xs, edge, canvas.width, pieceIndex);
+        add(xs, edge - variant.bounds.width, canvas.width, pieceIndex);
       }
       for (const edge of [bounds.minY, bounds.maxY]) {
-        add(ys, edge, searchTop);
-        add(ys, edge - variant.bounds.height, searchTop);
+        add(ys, edge, searchTop, pieceIndex);
+        add(ys, edge - variant.bounds.height, searchTop, pieceIndex);
       }
     }
   }
@@ -370,6 +600,12 @@ function findPlacementInLayout(
     requiredAttempt.variantsConsidered = variants.length;
     requiredAttempt.candidateOpportunitiesPotential =
       orderedX.length * orderedY.length * variants.length;
+  }
+  if (enumerationState) {
+    for (const x of orderedX) enumerationState.xCoordinates.add(x);
+    for (const y of orderedY) enumerationState.yCoordinates.add(y);
+    for (const x of contactXs!) enumerationState.contactXCoordinates.add(x);
+    for (const y of contactYs!) enumerationState.contactYCoordinates.add(y);
   }
   endBlock(profile, 'candidateCoordinates', coordinatesStart);
   if (profile) {
@@ -459,8 +695,12 @@ for (const y of orderedY) {
   for (const x of orderedX) {
     let key: string | undefined;
     for (const { variant, rejected } of variantStates) {
+      const candidateGenerationStart = enumerationState
+        ? startBlock(profile, 'candidateGeneration')
+        : -1;
       if (preferContact && !canImprove(x, y, variant)) {
         if (requiredAttempt) requiredAttempt.candidatesPrunedBeforeTranslation++;
+        endBlock(profile, 'candidateGeneration', candidateGenerationStart);
         continue;
       }
       if (key === undefined) {
@@ -469,7 +709,9 @@ for (const y of orderedY) {
         endBlock(profile, 'candidateKey', keyStart);
       }
       if (requiredAttempt) requiredAttempt.candidateOpportunitiesEmitted++;
-      yield { x, y, variant, rejected, state: undefined, ordinal: undefined, key };
+      const candidate = { x, y, variant, rejected, state: undefined, ordinal: undefined, key };
+      endBlock(profile, 'candidateGeneration', candidateGenerationStart);
+      yield candidate;
     }
   }
 }
@@ -519,6 +761,54 @@ for (const { x, y, variant, rejected, state, ordinal, key: candidateKey } of can
       key = `${x},${y}`;
       endBlock(profile, 'candidateKey', keyStart);
     }
+      let historicalCandidate = false;
+      if (!fillerSearch && requiredEnumerationContext) diagnostics.requiredCandidateEnumerations++;
+      if (enumerationState) {
+        const enumerationKey = `${variant.rotation}|${key}`;
+        historicalCandidate = enumerationState.emittedCandidates.has(enumerationKey);
+        if (historicalCandidate) {
+          diagnostics.requiredCandidateHistoricalReenumerations++;
+          if (!enumerationState.emittedCandidates.get(enumerationKey)) {
+            enumerationState.emittedCandidates.set(enumerationKey, true);
+            diagnostics.requiredDistinctHistoricalCandidates++;
+          }
+        } else {
+          enumerationState.emittedCandidates.set(enumerationKey, false);
+          diagnostics.requiredCandidateFreshEnumerations++;
+          diagnostics.requiredEnumerationUniqueCandidates++;
+          diagnostics.requiredEnumerationMaxUniqueCandidatesPerSearchIdentityLayout = Math.max(
+            diagnostics.requiredEnumerationMaxUniqueCandidatesPerSearchIdentityLayout,
+            enumerationState.emittedCandidates.size,
+          );
+          const hasNewCoordinate = priorEnumerationAttempts > 0 &&
+            (!previousXCoordinates!.has(x) || !previousYCoordinates!.has(y));
+          if (priorEnumerationAttempts === 0) {
+            diagnostics.requiredFirstSearchEnumerations++;
+          } else if (hasNewCoordinate) {
+            diagnostics.requiredCandidateNewCoordinateEnumerations++;
+            const isGridCandidate = gridXs!.has(x) && gridYs!.has(y);
+            const isContactCandidate = contactXs!.has(x) || contactYs!.has(y);
+            if (isGridCandidate) diagnostics.requiredNewCoordinateGridCandidates++;
+            if (isContactCandidate) diagnostics.requiredNewCoordinateContactCandidates++;
+            if (isGridCandidate && isContactCandidate) diagnostics.requiredNewCoordinateGridAndContactCandidates++;
+            if (!isGridCandidate && !isContactCandidate) diagnostics.requiredNewCoordinateOtherCandidates++;
+            if (lastPieceXs!.has(x) || lastPieceYs!.has(y)) {
+              diagnostics.requiredNewCoordinateCandidatesFromLastPiece++;
+            }
+            if (previousContactXCoordinates!.has(x) || previousContactYCoordinates!.has(y)) {
+              diagnostics.requiredNewCoordinateCandidatesUsingExistingContacts++;
+            }
+          } else {
+            diagnostics.requiredFreshEmissionsFromPreviouslyExistingCoordinates++;
+          }
+        }
+        const isGridCandidate = gridXs!.has(x) && gridYs!.has(y);
+        const isContactCandidate = contactXs!.has(x) || contactYs!.has(y);
+        if (isGridCandidate) diagnostics.requiredGridCandidatesEnumerated++;
+        if (isContactCandidate) diagnostics.requiredContactCandidatesEnumerated++;
+        if (isGridCandidate && isContactCandidate) diagnostics.requiredGridAndContactCandidatesEnumerated++;
+        if (!isGridCandidate && !isContactCandidate) diagnostics.requiredOtherCandidatesEnumerated++;
+      }
       const cacheStart = startBlock(profile, 'rejectionCache');
       const cacheHit = rejected.has(key);
       endBlock(profile, 'rejectionCache', cacheStart);
@@ -536,6 +826,12 @@ for (const { x, y, variant, rejected, state, ordinal, key: candidateKey } of can
       if (cacheHit) {
         diagnostics.candidateCacheHits++;
         if (requiredAttempt) requiredAttempt.candidateCacheHits++;
+        if (enumerationState) diagnostics.requiredFrontierEligibleHistoricalCandidates++;
+        if (historicalCandidate) {
+          diagnostics.requiredHistoricalCandidateCacheHits++;
+        } else if (cacheHit && enumerationState) {
+          diagnostics.requiredCacheHitsWithoutSameIdentityHistory++;
+        }
         continue;
       }
         diagnostics.candidatePlacementsTested++;
@@ -635,12 +931,21 @@ diagnostics.exactPolygonCollisionChecks++;
         if (!collision) {
 
   const finePolygonStart = startBlock(profile, 'fineCandidatePolygon');
-  const finePolygon = variant.finePolygon.map((point) => ({
-    x: point.x + x,
-    y: point.y + y,
-  }));
-  const collisionComponents = variant.collisionComponents?.map(p => p.map(point => ({x:point.x + x,y:point.y + y})));
-  endBlock(profile, 'fineCandidatePolygon', finePolygonStart);
+const finePolygon = variant.finePolygon.map((point) => ({
+  x: point.x + x,
+  y: point.y + y,
+}));
+const collisionComponents = fillerSearch
+  ? variant.collisionComponents?.map(p => p.map(point => ({x:point.x + x,y:point.y + y})))
+  : undefined;
+const translatedCandidateComponents: (Polygon | undefined)[] = variant.collisionComponents
+  ? new Array(variant.collisionComponents.length)
+  : [];
+const translatedCandidateComponentBounds: (PolygonBounds | undefined)[] = variant.collisionComponentBounds
+  ? new Array(variant.collisionComponentBounds.length)
+  : [];
+if (profile && variant.collisionComponents) diagnostics.polygonCollision.exactCollisionCandidateScratchArrays += 2;
+endBlock(profile, 'fineCandidatePolygon', finePolygonStart);
 
   const fineBounds: PolygonBounds = {
     minX: x,
@@ -669,6 +974,7 @@ diagnostics.exactPolygonCollisionChecks++;
   }
 
   let fineCollision = false;
+  let candidateEnteredComponentPath = false;
 
   for (const neighbor of fineNeighbors) {
     // Mixed PNG/component pairs skip the coarse polygon collision above.
@@ -685,25 +991,55 @@ diagnostics.exactPolygonCollisionChecks++;
       continue;
     }
 
-    if (
-      (fillerSearch ? (collisionComponents ?? [finePolygon]).some(p =>
-        (neighbor.collisionComponents ?? [neighbor.finePolygon]).some(q => fillerSearch.overlap(p,q))) : collisionComponents || neighbor.collisionComponents ? componentsOverlap(
-        collisionComponents ?? [finePolygon], neighbor.collisionComponents ?? [neighbor.finePolygon],
-      ) : polygonsOverlap(
-        finePolygon,
-        neighbor.finePolygon,
-        fineBounds,
-        neighbor.fineBounds,
-      ))
-    ) {
+    const usesComponentPath = Boolean(variant.collisionComponents || neighbor.collisionComponents);
+    if (!fillerSearch && usesComponentPath && !candidateEnteredComponentPath) {
+      diagnostics.candidatesEnteringComponentPath++;
+      candidateEnteredComponentPath = true;
+    }
+    let overlapsFine: boolean;
+    if (fillerSearch) {
+      overlapsFine = (collisionComponents ?? [finePolygon]).some(p =>
+        (neighbor.collisionComponents ?? [neighbor.finePolygon]).some(q => fillerSearch.overlap(p,q)));
+    } else if (usesComponentPath) {
+      const componentStart = startBlock(profile, 'componentOverlap');
+      overlapsFine = componentsOverlapAtOffset(
+        variant.collisionComponents ?? [finePolygon],
+        variant.collisionComponentBounds ?? [fineBounds],
+        Boolean(variant.collisionComponents),
+        x,
+        y,
+        neighbor.collisionComponents ?? [neighbor.finePolygon],
+        neighbor.collisionComponentBounds ?? [neighbor.fineBounds],
+        translatedCandidateComponents,
+        translatedCandidateComponentBounds,
+        diagnostics,
+        profile ? diagnostics.polygonCollision : undefined,
+      );
+      endBlock(profile, 'componentOverlap', componentStart);
+    } else {
+      overlapsFine = polygonsOverlap(finePolygon, neighbor.finePolygon, fineBounds, neighbor.fineBounds);
+    }
+    if (overlapsFine) {
       fineCollision = true;
       break;
     }
   }
 
   if (!fineCollision) {
+    const placedCollisionComponents = collisionComponents ?? (variant.collisionComponents
+      ? variant.collisionComponents.map((_, index) => translatedComponentAt(
+          variant.collisionComponents!, index, x, y, translatedCandidateComponents, diagnostics,
+          profile ? diagnostics.polygonCollision : undefined,
+        ))
+      : undefined);
+    const placedCollisionComponentBounds = !fillerSearch && variant.collisionComponentBounds
+      ? variant.collisionComponentBounds.map((_, index) => translatedComponentBoundsAt(
+          variant.collisionComponentBounds!, index, x, y, translatedCandidateComponentBounds,
+        ))
+      : undefined;
     const candidate = {
-      ...(collisionComponents ? {collisionComponents} : {}),
+      ...(placedCollisionComponents ? {collisionComponents:placedCollisionComponents} : {}),
+      ...(placedCollisionComponentBounds ? {collisionComponentBounds:placedCollisionComponentBounds} : {}),
       polygon,
       bounds,
       finePolygon,
@@ -759,7 +1095,7 @@ if (!improvesScore(requiredScore(potentialGarments, contactNeighbors.length - po
     for (const neighbor of contactNeighbors) {
       const contactStart = startBlock(profile, 'contact');
       const touches = preferContact === 'free-png'
-        ? (collisionComponents ?? [finePolygon]).some(p =>
+        ? (candidate.collisionComponents ?? [finePolygon]).some(p =>
           (neighbor.collisionComponents ?? [neighbor.finePolygon]).some(q => polygonsTouch(p,q)))
         : polygonsTouch(finePolygon, neighbor.finePolygon);
       endBlock(profile, 'contact', contactStart);
@@ -796,6 +1132,7 @@ export function nestMultiplePieces(
   validateInput(input);
   reportProgress?.({ phase: 'preparing' });
   const diagnostics: NestingDiagnostics = {
+  polygonCollision: createPolygonCollisionDiagnostics(),
   requiredMs: 0,
   fillerMs: 0,
   requiredFailedVersionHits: 0,
@@ -807,7 +1144,47 @@ export function nestMultiplePieces(
     layoutsCreated: 0,
     placedCount: 0,
     candidateCacheHits: 0,
+    componentTranslations: 0,
+    piecesUsingCollisionComponents: 0,
+    candidatesEnteringComponentPath: 0,
+    componentsOverlapCalls: 0,
+    componentPairCandidates: 0,
+    componentPairAabbRejects: 0,
+    componentPairBoundsRecomputed: 0,
+    componentBoundsPrecomputations: 0,
+    componentPairExactChecks: 0,
+    componentPairExactCollisions: 0,
+    requiredSearchAttempts: 0,
+    requiredCandidateEnumerations: 0,
+    requiredCandidateFreshEnumerations: 0,
+    requiredCandidateHistoricalReenumerations: 0,
+    requiredDistinctHistoricalCandidates: 0,
+    requiredFirstSearchEnumerations: 0,
+    requiredFreshEmissionsFromPreviouslyExistingCoordinates: 0,
+    requiredSearchRestartsFromBeginning: 0,
+    requiredGridCandidatesEnumerated: 0,
+    requiredContactCandidatesEnumerated: 0,
+    requiredGridAndContactCandidatesEnumerated: 0,
+    requiredOtherCandidatesEnumerated: 0,
+    requiredDuplicateAxisCoordinateProposals: 0,
+    requiredDuplicateAxisCoordinateProposalsSkipped: 0,
+    requiredFrontierEligibleHistoricalCandidates: 0,
+    requiredCacheHitsWithoutSameIdentityHistory: 0,
+    requiredCandidateNewCoordinateEnumerations: 0,
+    requiredNewCoordinateGridCandidates: 0,
+    requiredNewCoordinateContactCandidates: 0,
+    requiredNewCoordinateGridAndContactCandidates: 0,
+    requiredNewCoordinateOtherCandidates: 0,
+    requiredNewCoordinateCandidatesFromLastPiece: 0,
+    requiredNewCoordinateCandidatesUsingExistingContacts: 0,
+    requiredHistoricalCandidateCacheHits: 0,
+    requiredEnumerationUniqueCandidates: 0,
+    requiredEnumerationMaxUniqueCandidatesPerSearchIdentityLayout: 0,
+    requiredEnumerationStates: 0,
   };
+  const requiredEnumerationContext: RequiredEnumerationContext | undefined = input.diagnosticRequiredEnumeration
+    ? new WeakMap()
+    : undefined;
   if (profile) diagnostics.profile = profile;
   if (input.diagnosticRequiredScale) diagnostics.requiredPieces = [];
   const preparationStart = startBlock(profile, 'preparation');
@@ -823,6 +1200,7 @@ export function nestMultiplePieces(
   >();
   const prepared = input.pieces
     .map((piece) => {
+      if (piece.collisionComponents) diagnostics.piecesUsingCollisionComponents++;
       const sourcePolygon = piece.collisionComponents ? componentEnvelope(piece.collisionComponents) : piece.polygon;
       const fineSourcePolygon = piece.collisionComponents ? sourcePolygon : piece.finePolygon ?? piece.polygon;
 
@@ -845,28 +1223,35 @@ const key = JSON.stringify([
         .map((rotation) => {
           let variant = cached.rotations.get(rotation);
           if (!variant) {
-  const polygon = transformPolygon(sourcePolygon, {
-    x: 0,
-    y: 0,
-    rotation,
-  });
+            const polygon = transformPolygon(sourcePolygon, {
+              x: 0,
+              y: 0,
+              rotation,
+            });
 
-  const finePolygon = transformPolygon(fineSourcePolygon, {
-    x: 0,
-    y: 0,
-    rotation,
-  });
+            const finePolygon = transformPolygon(fineSourcePolygon, {
+              x: 0,
+              y: 0,
+              rotation,
+            });
 
-  diagnostics.polygonTransforms++;
+            diagnostics.polygonTransforms++;
 
-  variant = {
-    ...(piece.collisionComponents ? {collisionComponents:transformComponents(piece.collisionComponents, {x:0,y:0,rotation})} : {}),
-    polygon,
-    bounds: getPolygonBounds(polygon),
-    finePolygon,
-    fineBounds: getPolygonBounds(finePolygon),
-    rotation,
-  };
+            const collisionComponents = piece.collisionComponents
+              ? transformComponents(piece.collisionComponents, {x:0,y:0,rotation})
+              : undefined;
+            const collisionComponentBounds = collisionComponents?.map(getPolygonBounds);
+            diagnostics.componentBoundsPrecomputations += collisionComponentBounds?.length ?? 0;
+
+            variant = {
+              ...(collisionComponents ? {collisionComponents} : {}),
+              ...(collisionComponentBounds ? {collisionComponentBounds} : {}),
+              polygon,
+              bounds: getPolygonBounds(polygon),
+              finePolygon,
+              fineBounds: getPolygonBounds(finePolygon),
+              rotation,
+            };
 
   cached.rotations.set(rotation, variant);
 }
@@ -939,6 +1324,8 @@ for (const [pieceOffset, { piece, variants, requiredSearchIdentity }] of prepare
         layout.pieces.length > 0 ? piece.kind ?? false : false,
         undefined,
         attempt,
+        requiredEnumerationContext,
+        requiredSearchIdentity,
       );
       if (attempt && pieceDiagnostics) {
         attempt.elapsedMs = performance.now() - attemptStartedAt;
@@ -977,6 +1364,8 @@ for (const [pieceOffset, { piece, variants, requiredSearchIdentity }] of prepare
         false,
         undefined,
         attempt,
+        requiredEnumerationContext,
+        requiredSearchIdentity,
       );
       if (attempt && pieceDiagnostics) {
         attempt.elapsedMs = performance.now() - attemptStartedAt;

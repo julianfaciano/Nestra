@@ -23,6 +23,8 @@ const AUDIT_PROFILE_BLOCKS = [
   'candidateKey',
   'fineCandidatePolygon',
   'contact',
+  'componentOverlap',
+  'candidateGeneration',
 ] as const;
 type AuditProfileBlock = (typeof AUDIT_PROFILE_BLOCKS)[number];
 type InternalProfileBlock = ProfileBlock | AuditProfileBlock;
