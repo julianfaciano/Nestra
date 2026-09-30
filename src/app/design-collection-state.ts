@@ -2,8 +2,8 @@ import {
   scanDesignCollection,
   type MissingDesignAsset,
 } from '../domain/design-collection';
-import type { PieceSide } from '../domain/piece-side';
-import type { GarmentSize } from '../domain/size';
+import { PIECE_SIDES, type PieceSide } from '../domain/piece-side';
+import { GARMENT_SIZES, type GarmentSize } from '../domain/size';
 
 export interface DesignCollectionAsset {
   readonly size: GarmentSize;
@@ -24,6 +24,8 @@ export interface DesignCollection {
   readonly id: string;
   readonly name: string;
   readonly assets: readonly DesignCollectionAsset[];
+  /** Additional BACK sources; never participate in full-garment pairing. */
+  readonly replacementAssets?: readonly DesignCollectionAsset[];
   readonly missing: readonly MissingDesignAsset[];
   readonly duplicateSlots: readonly string[];
   readonly ignoredFileNames: readonly string[];
@@ -124,6 +126,10 @@ for (const file of files) {
   ...(sourceFolderPath ? { sourceFolderPath } : {}),
   name: scan.name,
   assets,
+  replacementAssets: scan.replacementAssets.flatMap((descriptor) => {
+    const file = fileByRelativePath.get(descriptor.relativePath);
+    return file ? [{ ...descriptor, file }] : [];
+  }),
   masterAssets,
   missing: scan.missing,
   duplicateSlots: scan.duplicateSlots,
@@ -159,7 +165,21 @@ export function findCollectionPreviewAsset(
    * Compatibilidad con colecciones importadas antes de que
    * empezáramos a persistir los archivos maestros.
    */
-  return findCollectionAsset(collection, 'T8', side);
+  return findCollectionAsset(collection, 'T8', side) ?? collection.replacementAssets?.find(asset => asset.side === side);
+}
+
+export function findCollectionReplacementAssets(
+  collection: DesignCollection,
+  size: GarmentSize,
+  side: PieceSide,
+): readonly DesignCollectionAsset[] {
+  const paths = new Set<string>();
+  return [...collection.assets, ...(collection.replacementAssets ?? [])].filter(asset => {
+    if (!GARMENT_SIZES.includes(asset.size) || asset.size !== size || asset.side !== side ||
+        !PIECE_SIDES.includes(asset.side) || paths.has(asset.relativePath)) return false;
+    paths.add(asset.relativePath);
+    return true;
+  });
 }
 
 export function isCollectionComplete(

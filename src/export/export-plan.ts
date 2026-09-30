@@ -211,7 +211,7 @@ function exportLayoutSignature(
       return [
         art.definition.id,
         art.definition.fileName,
-        ...(art.definition.kind === 'garment'
+        ...(art.definition.kind !== 'free-png'
           ? [art.definition.model, art.definition.size, art.definition.side]
           : [art.definition.kind]),
         art.placement.rotation,
@@ -365,7 +365,7 @@ function createBoundsIssue(
     instanceId: pieceId,
     definitionId: definition.id,
     design: pieceDefinitionLabel(definition),
-    ...(definition.kind === 'garment'
+    ...(definition.kind !== 'free-png'
       ? { size: definition.size, side: definition.side }
       : {}),
     rotation: art.placement.rotation,
@@ -415,6 +415,7 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
     try { physicalArtworkHeight(d.physicalWidthMm, d.physicalHeightMm, d.sourceWidthPx, d.sourceHeightPx); }
     catch (e) { errors.push(label + ': ' + String(e)); }
     if (d.kind === 'free-png') continue;
+    if (d.kind !== 'garment') continue;
     const key = JSON.stringify([d.fabric, d.model, d.size]);
     const pair = pairing.get(key) ?? { front: 0, back: 0 };
     pair[d.side] += d.quantity;

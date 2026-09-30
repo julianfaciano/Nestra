@@ -14,6 +14,8 @@ export function summarizeProductionPlacement(
   );
   let totalRequiredPngs = 0;
   let placedRequiredPngs = 0;
+  let totalReplacements = 0;
+  let placedReplacements = 0;
 
   const pairKey = (
     definition: Extract<BatchPieceDefinition, { kind: 'garment' }>,
@@ -33,8 +35,10 @@ export function summarizeProductionPlacement(
     if (definition.fabric !== result.fabric) continue;
     if (definition.kind === 'free-png') {
       totalRequiredPngs += definition.quantity;
-    } else {
+    } else if (definition.kind === 'garment') {
       addSide(totalPairs, pairKey(definition), definition.side, definition.quantity);
+    } else {
+      totalReplacements += definition.quantity;
     }
   }
 
@@ -45,8 +49,10 @@ export function summarizeProductionPlacement(
       if (!definition || definition.fabric !== result.fabric) continue;
       if (definition.kind === 'free-png') {
         placedRequiredPngs += 1;
-      } else {
+      } else if (definition.kind === 'garment') {
         addSide(placedPairs, pairKey(definition), definition.side, 1);
+      } else {
+        placedReplacements += 1;
       }
     }
   }
@@ -65,9 +71,12 @@ export function summarizeProductionPlacement(
     totalGarments,
     placedRequiredPngs,
     totalRequiredPngs,
+    placedReplacements,
+    totalReplacements,
     complete:
       result.unplacedPieceIds.length === 0 &&
       placedGarments === totalGarments &&
+      placedReplacements === totalReplacements &&
       placedRequiredPngs === totalRequiredPngs,
   };
 }

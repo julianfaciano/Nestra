@@ -28,4 +28,19 @@ export interface FreePngDraft {
   readonly sourceHeightPx: number;
 }
 
-export type ProductionPieceDraft = BatchPieceDraft | FreePngDraft;
+export interface ReplacementPieceDraft {
+  readonly kind: 'replacement-piece';
+  readonly id: string;
+  readonly collectionId: string;
+  readonly model: string;
+  readonly size: GarmentSize;
+  readonly side: PieceSide;
+  readonly fabric: string;
+  readonly quantity: number;
+  readonly file: File;
+  readonly imageUrl: string;
+  readonly sourceWidthPx: number;
+  readonly sourceHeightPx: number;
+}
+
+export type ProductionPieceDraft = BatchPieceDraft | ReplacementPieceDraft | FreePngDraft;

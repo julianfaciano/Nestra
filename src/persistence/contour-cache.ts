@@ -27,6 +27,7 @@ interface StoredContourPair {
 }
 
 interface ContourCacheKeyOptions {
+  readonly geometryMode?: 'all-visible-replacement';
   readonly alphaThreshold: number;
   readonly fastSimplificationPx: number;
   readonly fineSimplificationPx: number;
@@ -86,6 +87,7 @@ export async function buildContourCacheKey(
     `fine:${options.fineSimplificationPx}`,
     `width:${options.physicalWidthMm.toFixed(6)}`,
     `height:${options.physicalHeightMm.toFixed(6)}`,
+    ...(options.geometryMode ? [`geometry:${options.geometryMode}`] : []),
   ].join('|');
 }
 

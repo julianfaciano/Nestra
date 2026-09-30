@@ -24,15 +24,23 @@ export interface GarmentPieceDefinition extends PieceDefinitionBase {
   readonly side: PieceSide;
 }
 
+export interface ReplacementPieceDefinition extends PieceDefinitionBase {
+  readonly kind: 'replacement-piece';
+  readonly collectionId: string;
+  readonly model: string;
+  readonly size: GarmentSize;
+  readonly side: PieceSide;
+}
+
 export interface FreePngDefinition extends PieceDefinitionBase {
   readonly fill?: FillSetting | undefined;
   readonly kind: 'free-png';
 }
 
-export type BatchPieceDefinition = GarmentPieceDefinition | FreePngDefinition;
+export type BatchPieceDefinition = GarmentPieceDefinition | ReplacementPieceDefinition | FreePngDefinition;
 
 export function pieceDefinitionLabel(piece: BatchPieceDefinition): string {
-  return piece.kind === 'garment' ? piece.model : piece.fileName;
+  return piece.kind === 'free-png' ? piece.fileName : piece.model;
 }
 
 export interface ProductionBatch {

@@ -278,6 +278,17 @@ export function DesignCollectionLibrary({
                     </div>
                   </div>
 
+                  {collection.replacementAssets?.length ? (
+                    <details>
+                      <summary>Dorsos para reposición ({collection.replacementAssets.length})</summary>
+                      <div className="library-card-previews">
+                        {collection.replacementAssets.map(asset => (
+                          <AssetPreview key={asset.relativePath} asset={asset} label={`${asset.size} · ${asset.fileName}`} />
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
+
                   {collection.duplicateSlots.length > 0 ? (
                     <p className="design-collection-warning">
                       Hay archivos duplicados para:{' '}

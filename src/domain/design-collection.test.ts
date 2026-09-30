@@ -116,3 +116,25 @@ describe('design collection', () => {
     );
   });
 });
+
+it.each([true, false])('keeps nom sources outside canonical slots regardless of file order (named first=%s)', namedFirst => {
+  const folder = 'San Lorenzo Escudo';
+  const canonical = ['SLE_0006_T4-FRENTE.png', 'SLE_0007_T4-DORSO.png'];
+  const named = ['aanomFIRULAIS SLE_D_T4.png', 'nomSLE_0007_T4-DORSO.png', 'nom SLE T4 FRENTE.png'];
+  const result = scanDesignCollection((namedFirst ? [...named, ...canonical] : [...canonical, ...named])
+    .map(fileName => ({ fileName, relativePath: `${folder}/${fileName}` })));
+  expect(result.name).toBe(folder);
+  expect(result.assets.map(asset => asset.fileName)).toEqual(canonical);
+  expect(result.replacementAssets.map(asset => asset.fileName)).toEqual(named);
+  expect(result.replacementAssets.every(asset => asset.size === 'T4' && asset.side === 'back')).toBe(true);
+  expect(result.duplicateSlots).toEqual([]);
+  expect(result.ignoredFileNames).toEqual([]);
+});
+
+it('ignores nom files with unknown or conflicting size evidence without occupying a garment slot', () => {
+  const names = ['nom T4 T8 DORSO.png', 'nom_SLE_T11.png', 'nom_modelo2026.png'];
+  const result = scanDesignCollection(names.map(fileName => ({ fileName, relativePath: `San Lorenzo Escudo/${fileName}` })));
+  expect(result.assets).toEqual([]);
+  expect(result.replacementAssets).toEqual([]);
+  expect(result.ignoredFileNames).toEqual(names);
+});

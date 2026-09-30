@@ -50,6 +50,8 @@ describe('summarizeProductionPlacement', () => {
       totalGarments: 1,
       placedRequiredPngs: 1,
       totalRequiredPngs: 1,
+      placedReplacements: 0,
+      totalReplacements: 0,
       complete: true,
     });
   });
@@ -61,6 +63,28 @@ describe('summarizeProductionPlacement', () => {
       placedRequiredPngs: 0,
       totalRequiredPngs: 1,
       complete: false,
+    });
+  });
+
+  it('cuenta una reposición aislada aparte y no la convierte en prenda', () => {
+    const replacement: BatchPieceDefinition = {
+      ...base,
+      kind: 'replacement-piece',
+      id: 'replacement',
+      collectionId: 'collection-1',
+      model: 'Argentina 2026',
+      size: 'T8',
+      side: 'back',
+      quantity: 2,
+    };
+    expect(summarizeProductionPlacement([replacement], result(['replacement-1', 'replacement-2'], []))).toEqual({
+      placedGarments: 0,
+      totalGarments: 0,
+      placedRequiredPngs: 0,
+      totalRequiredPngs: 0,
+      placedReplacements: 2,
+      totalReplacements: 2,
+      complete: true,
     });
   });
 });

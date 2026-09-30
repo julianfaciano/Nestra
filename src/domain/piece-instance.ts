@@ -19,7 +19,7 @@ export function expandPieceDefinitions(
     if (
       !Number.isInteger(definition.quantity) ||
       definition.quantity < 0 ||
-      (definition.kind === 'free-png' &&
+      (definition.kind !== 'garment' &&
         (!Number.isSafeInteger(definition.quantity) || definition.quantity < 1))
     ) {
       throw new Error(

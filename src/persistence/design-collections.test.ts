@@ -204,3 +204,16 @@ describe('design collections persistence', () => {
     ).toThrow('duplicado');
   });
 });
+
+it.each([
+  { size: 'T11', side: 'back' },
+  { size: 'T5', side: 'front' },
+  { size: 'T5', side: 'back', image: new Blob(['not PNG'], { type: 'text/plain' }) },
+])('rejects invalid supplemental Library metadata %j', invalid => {
+  const stored = serializeDesignCollections([createCollection()]);
+  const asset = stored.collections[0]!.assets[0]!;
+  expect(() => validateStoredDesignCollections({
+    ...stored,
+    collections: [{ ...stored.collections[0], replacementAssets: [{ ...asset, relativePath: 'names/edited.png', ...invalid }] }],
+  })).toThrow('reposici');
+});

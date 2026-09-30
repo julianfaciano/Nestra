@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDesignCollection,
   findCollectionAsset,
+  findCollectionReplacementAssets,
   isCollectionComplete,
 } from './design-collection-state';
 
@@ -157,4 +158,40 @@ describe('design collection state', () => {
     expect(collection.missing).toHaveLength(0);
     expect(isCollectionComplete(collection)).toBe(true);
   });
+});
+
+it('retains named backs and duplicate recognized backs without changing garment pairing', () => {
+  const benji = createFolderFile('aanomBENJI ARG26E_0019_T10-DORSO.png');
+  const chicha = createFolderFile('aanomCHICHA ARG26E_0009_T5-DORSO.png');
+  const variant = createFolderFile('River JUAN T10 DORSO.png');
+  const files = buildCompleteFolder();
+  const collection = buildDesignCollection([benji, ...files, chicha, variant, createFolderFile('JUAN.png')], 'river');
+  expect(collection.assets).toHaveLength(20);
+  expect(collection.replacementAssets?.map(asset => asset.file)).toEqual([benji, chicha, variant]);
+  expect(collection.ignoredFileNames).toEqual(['JUAN.png']);
+  expect(collection.name).toBe('River Suplente 2026');
+  expect(findCollectionAsset(collection, 'T10', 'back')?.file).toBe(files[19]);
+  const options = findCollectionReplacementAssets(collection, 'T10', 'back');
+  expect(options.map(asset => asset.file)).toEqual([files[19], benji, variant]);
+  expect(options.every(asset => asset.size === 'T10' && asset.side === 'back')).toBe(true);
+});
+
+it('imports a standalone personalized back with its exact source and no canonical pair', () => {
+  const file = createFolderFile('aanomCHICHA ARG26E_0009_T5-DORSO.png');
+  const collection = buildDesignCollection([file], 'standalone');
+  expect(findCollectionAsset(collection, 'T5', 'front')).toBeUndefined();
+  expect(findCollectionAsset(collection, 'T5', 'back')).toBeUndefined();
+  expect(findCollectionReplacementAssets(collection, 'T5', 'back')).toEqual([
+    expect.objectContaining({ file, fileName: file.name, size: 'T5', side: 'back' }),
+  ]);
+  expect(isCollectionComplete(collection)).toBe(false);
+});
+
+it('adding personalized backs preserves complete canonical Library collections', () => {
+  const collection = buildDesignCollection([
+    createFolderFile('aanomBENJI ARG26E_0019_T10-DORSO.png'), ...buildCompleteFolder(),
+  ], 'river');
+  expect(isCollectionComplete(collection)).toBe(true);
+  expect(collection.duplicateSlots).toEqual([]);
+  expect(collection.missing).toEqual([]);
 });

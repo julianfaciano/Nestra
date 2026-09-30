@@ -1172,6 +1172,83 @@ input[type='number']::-webkit-inner-spin-button, input[type='number']::-webkit-o
   }
 }
 
+.replacement-piece-list .free-png-row label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.replacement-piece-list input {
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--text);
+}
+.replacement-piece-list { margin: 16px 0; }
+.replacement-piece-list h3 { margin: 0 0 8px; font-size: 14px; }
+.replacement-piece-list .free-png-row > strong { min-width: 210px; }
+.replacement-piece-list .free-png-row input { width: 92px; }
+
+.collection-browser-heading .secondary-button.is-active {
+  border-color: var(--interaction);
+  color: var(--interaction);
+}
+.replacement-piece-form {
+  display: block;
+  margin: 12px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+.replacement-piece-form fieldset {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(132px, 0.8fr);
+  align-items: end;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.replacement-piece-form fieldset label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.replacement-piece-form input,
+.replacement-piece-form select {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  border-radius: var(--radius-control, 6px);
+}
+.replacement-piece-form__actions { min-width: 0; }
+.replacement-piece-form__asset { grid-column: 1 / -1; grid-row: 2; }
+.replacement-piece-form__actions button { width: 100%; min-height: 38px; }
+.replacement-piece-form button:disabled { cursor: wait; opacity: 0.65; }
+.replacement-feedback {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.replacement-feedback.is-success { color: var(--success, #62b68b); }
+.replacement-feedback.is-error { color: var(--danger, #e27a7a); }
+
+@media (max-width: 980px) {
+  .replacement-piece-form fieldset { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .replacement-piece-form__asset { grid-row: auto; }
+}
+@media (max-width: 600px) {
+  .replacement-piece-form { padding: 12px; }
+  .replacement-piece-form fieldset { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 8px; }
+  .replacement-piece-form__actions { grid-column: 1 / -1; }
+}
+
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;

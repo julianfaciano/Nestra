@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { BatchPage } from './batch-page';
 import { chooseFreePng } from './free-png-import';
 import { nestInWorker } from '../geometry/nesting-client';
@@ -10,6 +10,10 @@ import {
 } from '../geometry/multi-piece-nesting-engine';
 import { exportPdfPrototype } from '../export/pdf-prototype';
 import { recordOptimizedBatch } from '../persistence/historical-jobs';
+import { buildDesignCollection, type DesignCollection } from './design-collection-state';
+import { preflightBatch } from '../export/export-plan';
+import { buildContourCacheKey, saveCachedContourPair } from '../persistence/contour-cache';
+import { getPolygonBounds } from '../geometry/polygon-transform';
 
 vi.mock('./free-png-import', async (original) => ({
   ...(await original<typeof import('./free-png-import')>()),
@@ -117,6 +121,179 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+function namedBackCollection(withCanonicalPair = false): DesignCollection {
+  const files = [
+    ...(withCanonicalPair ? [
+      new File(['front pixels'], 'ARG26E_0014_T8-FRENTE.png', { type: 'image/png' }),
+      new File(['standard back pixels'], 'ARG26E_0015_T8-DORSO.png', { type: 'image/png' }),
+    ] : []),
+    new File(['BENJI edited pixels'], 'aanomBENJI ARG26E_0015_T8-DORSO.png', { type: 'image/png' }),
+    new File(['CHICHA edited pixels'], 'aanomCHICHA ARG26E_0015_T8-DORSO.png', { type: 'image/png' }),
+    new File(['arbitrary'], 'JUAN.png', { type: 'image/png' }),
+  ];
+  for (const file of files) Object.defineProperty(file, 'webkitRelativePath', { value: `Argentina/${file.name}` });
+  return buildDesignCollection(files, 'argentina');
+}
+
+function realNamedBackCollection(withCanonicalPair = false): DesignCollection {
+  const files = [
+    new File(['FIRULAIS edited pixels'], 'aanomFIRULAIS SLE_D_T4.png', { type: 'image/png' }),
+    ...(withCanonicalPair ? [
+      new File(['front pixels'], 'SLE_0006_T4-FRENTE.png', { type: 'image/png' }),
+      new File(['standard back pixels'], 'SLE_0007_T4-DORSO.png', { type: 'image/png' }),
+    ] : []),
+    new File(['JUAN edited pixels'], 'NOMJUAN_SLE_D_T4.png', { type: 'image/png' }),
+    new File(['arbitrary'], 'JUAN.png', { type: 'image/png' }),
+  ];
+  for (const file of files) Object.defineProperty(file, 'webkitRelativePath', { value: `San Lorenzo Escudo/${file.name}` });
+  return buildDesignCollection(files, 'san-lorenzo');
+}
+
+function installNamedRasterFixture(nameExtendsSilhouette: boolean): void {
+  installGarmentRasterFixture();
+  let currentName = '';
+  vi.stubGlobal('createImageBitmap', vi.fn(async (file: File) => ({
+    width: 100, height: 100, close: vi.fn(), sourceName: file.name,
+  })));
+  vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+    drawImage: (image: { sourceName: string }) => { currentName = image.sourceName; },
+    getImageData: () => {
+      const data = new Uint8ClampedArray(100 * 100 * 4);
+      for (let y = 10; y < 90; y++) for (let x = 10; x < 90; x++) data[(y * 100 + x) * 4 + 3] = 255;
+      if (nameExtendsSilhouette && (currentName.startsWith('aanomBENJI') || currentName === 'aanomFIRULAIS SLE_D_T4.png')) {
+        for (let y = 0; y < 5; y++) for (let x = 94; x < 100; x++) data[(y * 100 + x) * 4 + 3] = 255;
+      }
+      return { width: 100, height: 100, data };
+    },
+  } as unknown as CanvasRenderingContext2D);
+}
+
+it.each([[false, false], [true, false], [true, true]])('adds an edited BACK without FRONT; exact preview/export, bounds and garment counters (extended name=%s, real nom convention=%s)', async (extendsSilhouette, realConvention) => {
+  window.sessionStorage.removeItem('nestra.batch.collection-quantities');
+  installNamedRasterFixture(extendsSilhouette);
+  const collection = realConvention ? realNamedBackCollection() : namedBackCollection();
+  const edited = collection.replacementAssets![0]!;
+  const view = render(<BatchPage templates={[]} collections={[collection]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar reposición' }));
+  const fields = within(screen.getByRole('form', { name: 'Agregar reposición' }));
+  expect(fields.getByLabelText('Talle')).toHaveValue(edited.size);
+  expect(fields.getByLabelText('Lado')).toHaveValue('back');
+  const selector = fields.getByLabelText('Archivo de Biblioteca');
+  expect(within(selector).getAllByRole('option')).toHaveLength(2);
+  expect(within(selector).queryByRole('option', { name: /JUAN\.png/ })).not.toBeInTheDocument();
+  fireEvent.change(selector, { target: { value: edited.relativePath } });
+  fireEvent.change(fields.getByLabelText('Cantidad'), { target: { value: '2' } });
+  fireEvent.click(fields.getByRole('button', { name: 'Agregar pieza' }));
+  await waitFor(() => expect(view.container.querySelectorAll('.replacement-piece-list li')).toHaveLength(1));
+  const row = view.container.querySelector('.replacement-piece-list li') as HTMLElement;
+  expect(row).toHaveTextContent(edited.fileName);
+  const sourceUrl = row.querySelector('img')!.getAttribute('src');
+  expect(vi.mocked(URL.createObjectURL).mock.calls.some(([file]) => file === edited.file)).toBe(true);
+  vi.mocked(nestInWorker).mockImplementationOnce(async input => nestMultiplePieces({ ...input, diagnosticProfiling: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Optimizar batch' }));
+  await screen.findByText(/0\/0 prendas colocadas · 2\/2 reposiciones colocadas/);
+  await waitFor(() => expect(currentExportButton()).toBeEnabled());
+  const input = vi.mocked(nestInWorker).mock.calls.at(-1)![0];
+  expect(input.pieces).toHaveLength(2);
+  for (const piece of input.pieces) {
+    expect(piece.kind).toBe('garment');
+    expect(piece.allowedRotations).toEqual([0, 180]);
+    expect(piece.polygon.length).toBeGreaterThanOrEqual(4);
+    expect(piece.finePolygon!.length).toBeGreaterThanOrEqual(4);
+    expect(piece).not.toHaveProperty('collisionComponents');
+  }
+  const nested = await vi.mocked(nestInWorker).mock.results.at(-1)!.value;
+  expect(nested.diagnostics.componentsOverlapCalls).toBe(0);
+  expect(nested.diagnostics.componentPairExactChecks).toBe(0);
+  expect(nested.placedCount).toBe(2);
+  console.info(`EDITED_BACK_PATH ${JSON.stringify({ extendedName: extendsSilhouette, rotations: input.pieces[0]!.allowedRotations.length, componentOverlapCalls: nested.diagnostics.componentsOverlapCalls, componentPairExactChecks: nested.diagnostics.componentPairExactChecks })}`);
+  expect(view.container.querySelectorAll('.batch-export-artwork image')).toHaveLength(2);
+  for (const image of view.container.querySelectorAll('.batch-export-artwork image')) expect(image).toHaveAttribute('href', sourceUrl);
+  expect(chooseFreePng).not.toHaveBeenCalled();
+  fireEvent.click(currentExportButton()!);
+  await screen.findByRole('button', { name: '1 archivo exportado' });
+  const exported = vi.mocked(exportPdfPrototype).mock.calls.at(-1)![0];
+  expect(exported.definitions).toEqual([expect.objectContaining({
+    kind: 'replacement-piece', collectionId: collection.id, size: edited.size, side: 'back',
+    quantity: 2, fileName: edited.fileName, imageUrl: sourceUrl,
+  })]);
+  const definition = exported.definitions[0]!;
+  const expectedBounds = extendsSilhouette
+    ? { x: 10, y: 0, width: 90, height: 90 }
+    : { x: 10, y: 10, width: 80, height: 80 };
+  expect(exported.sourceAlphaBounds!.get(definition.id)).toEqual(expectedBounds);
+  expect(exported.sourcePlacementBounds!.get(definition.id)).toEqual(expectedBounds);
+  const report = preflightBatch(exported);
+  expect(report.errors).toEqual([]);
+  expect(report.layouts[0]!.pieces.every(art => art.definition.imageUrl === sourceUrl)).toBe(true);
+  expect(report.layouts[0]!.pieces[0]!.sourceCrop).toMatchObject({ xPx: expectedBounds.x, yPx: expectedBounds.y, widthPx: expectedBounds.width, heightPx: expectedBounds.height });
+  expect(getPolygonBounds(exported.polygons.get(definition.id)!).maxX).toBeCloseTo((expectedBounds.x + expectedBounds.width) * definition.physicalWidthMm / definition.sourceWidthPx);
+  expect(buildContourCacheKey).toHaveBeenCalledWith(edited.file, expect.objectContaining({ geometryMode: 'all-visible-replacement' }));
+  expect(saveCachedContourPair).toHaveBeenCalledWith('test', expect.objectContaining({ sourceAlphaBounds: expectedBounds, sourcePlacementBounds: expectedBounds }));
+
+  fireEvent.change(within(row).getByLabelText('Cantidad'), { target: { value: '3' } });
+  expect(currentExportButton()).not.toBeInTheDocument();
+  expect(view.container.querySelector('.batch-export-artwork')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Optimizar batch' }));
+  await screen.findByText(/0\/0 prendas colocadas · 3\/3 reposiciones colocadas/);
+  await waitFor(() => expect(currentExportButton()).toBeEnabled());
+  fireEvent.change(within(row).getByLabelText('Tela'), { target: { value: 'polar' } });
+  expect(currentExportButton()).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Optimizar batch' }));
+  await waitFor(() => expect(currentExportButton()).toBeEnabled());
+  fireEvent.click(within(row).getByRole('button', { name: /Eliminar reposición/ }));
+  expect(currentExportButton()).not.toBeInTheDocument();
+  expect(view.container.querySelector('.replacement-piece-list')).not.toBeInTheDocument();
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith(sourceUrl);
+});
+
+it.each([false, true])('mixes standard and two edited BACK sources, a normal garment and a required free-PNG on the same fabric (real nom convention=%s)', async realConvention => {
+  window.sessionStorage.removeItem('nestra.batch.collection-quantities');
+  installNamedRasterFixture(true);
+  const collection = realConvention ? realNamedBackCollection(true) : namedBackCollection(true);
+  const view = render(<BatchPage templates={[]} collections={[collection]} />);
+  fireEvent.change(screen.getByLabelText(`Cantidad ${collection.assets[0]!.size}`), { target: { value: '1' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar reposición' }));
+  fireEvent.change(screen.getByLabelText('Lado'), { target: { value: 'back' } });
+  const selector = screen.getByLabelText('Archivo de Biblioteca');
+  expect(within(selector).getAllByRole('option').map(option => option.textContent)).toEqual([
+    collection.assets[1]!.relativePath,
+    ...collection.replacementAssets!.map(asset => asset.relativePath),
+  ]);
+  for (const path of [collection.assets[1]!.relativePath, ...collection.replacementAssets!.map(asset => asset.relativePath)]) {
+    fireEvent.change(selector, { target: { value: path } });
+    fireEvent.click(screen.getByRole('button', { name: 'Agregar pieza' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Agregar pieza' })).toBeEnabled());
+  }
+  expect(view.container.querySelectorAll('.replacement-piece-list li')).toHaveLength(3);
+  vi.mocked(chooseFreePng).mockResolvedValueOnce({
+    kind: 'free-png', id: 'free-logo', file: new File(['logo'], 'logo.png', { type: 'image/png' }),
+    imageUrl: 'blob:free-logo', sourceWidthPx: 100, sourceHeightPx: 100, quantity: 1, fabric: 'set',
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar PNG' }));
+  await screen.findByText('logo.png');
+  fireEvent.click(screen.getByRole('button', { name: 'Optimizar batch' }));
+  await screen.findByText(/1\/1 prendas colocadas · 3\/3 reposiciones colocadas · 1\/1 PNG requeridos colocados/);
+  await waitFor(() => expect(currentExportButton()).toBeEnabled());
+  const inputs = vi.mocked(nestInWorker).mock.calls;
+  expect(inputs).toHaveLength(1);
+  expect(inputs[0]![0].pieces).toHaveLength(6);
+  expect(inputs[0]![0].pieces.filter(piece => piece.kind === 'free-png')).toHaveLength(1);
+  fireEvent.click(currentExportButton()!);
+  await screen.findByRole('button', { name: '1 archivo exportado' });
+  const exported = vi.mocked(exportPdfPrototype).mock.calls.at(-1)![0];
+  expect(exported.results).toHaveLength(1);
+  expect(exported.definitions.filter(piece => piece.kind === 'garment').map(piece => piece.fileName)).toEqual([
+    ...collection.assets.map(asset => asset.fileName),
+  ]);
+  const replacements = exported.definitions.filter(piece => piece.kind === 'replacement-piece');
+  expect(replacements.map(piece => piece.fileName)).toEqual([
+    collection.assets[1]!.fileName, ...collection.replacementAssets!.map(asset => asset.fileName),
+  ]);
+  expect(new Set(replacements.map(piece => piece.imageUrl)).size).toBe(3);
+  expect(preflightBatch(exported).errors).toEqual([]);
+});
+
 it('muestra prendas, previews y Exportar después de optimizar garments', async () => {
   const view = renderGarmentBatch(2);
 
@@ -127,6 +304,126 @@ it('muestra prendas, previews y Exportar después de optimizar garments', async 
   expect(screen.getByText(/2\/2 prendas colocadas/)).toBeInTheDocument();
   await waitFor(() => expect(currentExportButton()).toBeEnabled());
   expect(view.container.querySelectorAll('.batch-export-layout').length).toBeGreaterThan(0);
+});
+
+it('agrega y optimiza un dorso de reposición sin exigir frente counterpart', async () => {
+  window.sessionStorage.removeItem('nestra.batch.collection-quantities');
+  installGarmentRasterFixture();
+  const view = render(<BatchPage templates={[]} collections={[garmentCollectionFixture()]} />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar reposición' }));
+  fireEvent.change(screen.getByLabelText('Diseño'), { target: { value: 'fixture' } });
+  fireEvent.change(screen.getByLabelText('Talle'), { target: { value: 'T8' } });
+  fireEvent.change(screen.getByLabelText('Lado'), { target: { value: 'back' } });
+  fireEvent.change(screen.getByLabelText('Cantidad', { selector: 'input' }), { target: { value: '2' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar pieza' }));
+
+  expect(await screen.findByText('Fixture · T8 · Dorso')).toBeInTheDocument();
+  const replacementForm = screen.getByRole('form', { name: 'Agregar reposición' });
+  const replacementFields = within(replacementForm);
+  expect(replacementForm).toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('Reposición agregada. Podés cargar otra.');
+  expect(replacementFields.getByLabelText('Diseño')).toHaveValue('fixture');
+  expect(replacementFields.getByLabelText('Talle')).toHaveValue('T8');
+  expect(replacementFields.getByLabelText('Lado')).toHaveValue('back');
+  expect(replacementFields.getByLabelText('Tela')).toHaveValue('set');
+  expect(replacementFields.getByLabelText('Cantidad', { selector: 'input' })).toHaveValue(1);
+  expect(replacementFields.getByLabelText('Cantidad', { selector: 'input' })).toHaveFocus();
+
+  fireEvent.change(replacementFields.getByLabelText('Cantidad', { selector: 'input' }), { target: { value: '1' } });
+  fireEvent.submit(replacementForm);
+  await screen.findByRole('status');
+  await waitFor(() => expect(view.container.querySelectorAll('.replacement-piece-list .free-png-row')).toHaveLength(2));
+  expect(screen.getByRole('form', { name: 'Agregar reposición' })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Optimizar batch' }));
+
+  await screen.findByText(/0\/0 prendas colocadas · 3\/3 reposiciones colocadas/);
+  await waitFor(() => expect(currentExportButton()).toBeEnabled());
+  const nestingInput = vi.mocked(nestInWorker).mock.calls.at(-1)?.[0];
+  expect(nestingInput?.pieces).toHaveLength(3);
+  expect(nestingInput?.pieces[0]).toMatchObject({ kind: 'garment', allowedRotations: [0, 180] });
+  expect(nestingInput?.pieces[0]).not.toHaveProperty('collisionComponents');
+  expect(view.container.querySelectorAll('.batch-export-layout').length).toBeGreaterThan(0);
+
+  const firstReplacement = view.container.querySelector('.replacement-piece-list .free-png-row');
+  expect(firstReplacement).not.toBeNull();
+  fireEvent.change(within(firstReplacement as HTMLElement).getByLabelText('Cantidad'), { target: { value: '3' } });
+  expect(currentExportButton()).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Optimizar batch' }));
+  await screen.findByText(/0\/0 prendas colocadas · 4\/4 reposiciones colocadas/);
+  await waitFor(() => expect(currentExportButton()).toBeEnabled());
+});
+
+it('permite quitar una reposición de la lista antes de optimizar', async () => {
+  window.sessionStorage.removeItem('nestra.batch.collection-quantities');
+  installGarmentRasterFixture();
+  render(<BatchPage templates={[]} collections={[garmentCollectionFixture()]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar reposición' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar pieza' }));
+  expect(await screen.findByText('Fixture · T8 · Frente')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Eliminar reposición Fixture T8 Frente' }));
+  expect(screen.queryByText('Fixture · T8 · Frente')).not.toBeInTheDocument();
+});
+
+it('cancela el panel con el botón o Escape y devuelve el foco al control', () => {
+  render(<BatchPage templates={[]} collections={[garmentCollectionFixture()]} />);
+  const trigger = screen.getByRole('button', { name: 'Agregar reposición' });
+  fireEvent.click(trigger);
+  expect(screen.getByLabelText('Diseño')).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole('form', { name: 'Agregar reposición' }), { key: 'Escape' });
+  expect(screen.queryByRole('form', { name: 'Agregar reposición' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Agregar reposición' })).toHaveFocus();
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar reposición' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+  expect(screen.queryByRole('form', { name: 'Agregar reposición' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Agregar reposición' })).toHaveFocus();
+});
+
+it('muestra errores de validación sin cerrar ni limpiar la reposición', async () => {
+  installGarmentRasterFixture();
+  render(<BatchPage templates={[]} collections={[garmentCollectionFixture()]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar reposición' }));
+  fireEvent.change(screen.getByLabelText('Cantidad', { selector: 'input' }), { target: { value: '0' } });
+  fireEvent.submit(screen.getByRole('form', { name: 'Agregar reposición' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('cantidad entera mayor que cero');
+  expect(screen.getByRole('form', { name: 'Agregar reposición' })).toBeInTheDocument();
+  expect(screen.getByLabelText('Cantidad', { selector: 'input' })).toHaveValue(0);
+  fireEvent.change(screen.getByLabelText('Cantidad', { selector: 'input' }), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('Tela'), { target: { value: ' ' } });
+  fireEvent.submit(screen.getByRole('form', { name: 'Agregar reposición' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('tela');
+  expect(screen.getByRole('form', { name: 'Agregar reposición' })).toBeInTheDocument();
+});
+
+it('bloquea el doble envío y conserva el panel si falla la lectura del PNG', async () => {
+  installGarmentRasterFixture();
+  const bitmap = vi.fn(() => Promise.reject(new Error('Falló la lectura de prueba.')));
+  vi.stubGlobal('createImageBitmap', bitmap);
+  render(<BatchPage templates={[]} collections={[garmentCollectionFixture()]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar reposición' }));
+  const form = screen.getByRole('form', { name: 'Agregar reposición' });
+  fireEvent.submit(form);
+  fireEvent.submit(form);
+  expect(bitmap).toHaveBeenCalledTimes(1);
+  expect(await screen.findByRole('alert')).toHaveTextContent('Falló la lectura de prueba.');
+  expect(screen.getByRole('form', { name: 'Agregar reposición' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Agregar pieza' })).toBeEnabled();
+});
+
+it('indica carga y desactiva el formulario mientras prepara la reposición', async () => {
+  installGarmentRasterFixture();
+  let finishBitmap!: (image: { width: number; height: number; close: () => void }) => void;
+  const bitmap = vi.fn(() => new Promise<{ width: number; height: number; close: () => void }>(resolve => { finishBitmap = resolve; }));
+  vi.stubGlobal('createImageBitmap', bitmap);
+  render(<BatchPage templates={[]} collections={[garmentCollectionFixture()]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar reposición' }));
+  fireEvent.submit(screen.getByRole('form', { name: 'Agregar reposición' }));
+  expect(screen.getByRole('button', { name: 'Agregando…' })).toBeDisabled();
+  expect(screen.getByLabelText('Diseño')).toBeDisabled();
+  finishBitmap({ width: 100, height: 100, close: vi.fn() });
+  expect(await screen.findByRole('status')).toHaveTextContent('Reposición agregada. Podés cargar otra.');
+  expect(screen.getByRole('form', { name: 'Agregar reposición' })).toBeInTheDocument();
 });
 
 it('conserva en diagnóstico el perfil real usado por el resultado', async () => {

@@ -59,12 +59,14 @@ import type {
   BatchPieceDraft,
   FreePngDraft,
   ProductionPieceDraft,
+  ReplacementPieceDraft,
 } from './batch-state';
 import { FreePngPanel } from './free-png-panel';
 import { chooseFreePng, validFreePngQuantity } from './free-png-import';
 import type { SizeTemplateDraft } from './size-template-state';
 import {
   findCollectionAsset,
+  findCollectionReplacementAssets,
   findCollectionPreviewAsset,
   type DesignCollection,
 } from './design-collection-state';
@@ -109,7 +111,7 @@ function buildHistoricalSizeSummary(
   >();
 
   for (const definition of definitions) {
-    if (definition.kind === 'free-png') continue;
+    if (definition.kind !== 'garment') continue;
     const modelKey = `${definition.model}\u0000${definition.fabric}`;
     let bySize = byModel.get(modelKey);
 
@@ -324,6 +326,7 @@ async function polygonsFromDefinition(
         fineSimplificationPx: FINE_SIMPLIFICATION_PX,
         physicalWidthMm: definition.physicalWidthMm,
         physicalHeightMm: definition.physicalHeightMm,
+        ...(definition.kind === 'replacement-piece' ? { geometryMode: 'all-visible-replacement' as const } : {}),
       });
 
     const cached = cacheKey ? await loadCachedContourPair(cacheKey) : undefined;
@@ -418,8 +421,18 @@ async function polygonsFromDefinition(
       );
     }
 
+    // Separate letters can be outside the largest island. Reserve all visible
+    // content with one conservative polygon, retaining the garment engine path.
+    const replacementEnvelope = definition.kind === 'replacement-piece' && fineContour.outerLoopCount > 1
+      ? [
+          { x: sourceAlphaBounds.x, y: sourceAlphaBounds.y },
+          { x: sourceAlphaBounds.x + sourceAlphaBounds.width, y: sourceAlphaBounds.y },
+          { x: sourceAlphaBounds.x + sourceAlphaBounds.width, y: sourceAlphaBounds.y + sourceAlphaBounds.height },
+          { x: sourceAlphaBounds.x, y: sourceAlphaBounds.y + sourceAlphaBounds.height },
+        ]
+      : undefined;
     const fastPolygon = polygonPixelsToMillimeters(
-      fastContour.simplifiedPolygon,
+      replacementEnvelope ?? fastContour.simplifiedPolygon,
       image.width,
       image.height,
       definition.physicalWidthMm,
@@ -427,15 +440,13 @@ async function polygonsFromDefinition(
     );
 
     const finePolygon = polygonPixelsToMillimeters(
-      fineContour.simplifiedPolygon,
+      replacementEnvelope ?? fineContour.simplifiedPolygon,
       image.width,
       image.height,
       definition.physicalWidthMm,
       definition.physicalHeightMm,
     );
-    const sourcePlacementBounds = contourPixelBounds(
-      fineContour.rawPolygon,
-    );
+    const sourcePlacementBounds = replacementEnvelope ? sourceAlphaBounds : contourPixelBounds(fineContour.rawPolygon);
 
     const result: PolygonPair = {
       fastPolygon,
@@ -463,7 +474,7 @@ async function polygonsFromDefinition(
 }
 
 function findTemplateForDraft(
-  draft: BatchPieceDraft,
+  draft: BatchPieceDraft | ReplacementPieceDraft,
   templates: readonly SizeTemplateDraft[],
 ): SizeTemplateDraft | undefined {
   return templates.find(
@@ -472,7 +483,7 @@ function findTemplateForDraft(
 }
 
 function validateDraft(draft: ProductionPieceDraft): string | null {
-  if (draft.kind === 'garment' && draft.model.trim().length === 0) {
+  if (draft.kind !== 'free-png' && draft.model.trim().length === 0) {
     return 'Todas las filas deben tener un modelo.';
   }
 
@@ -533,6 +544,11 @@ interface OptimizationDiagnostics {
   readonly candidateCacheHits: number;
 }
 
+type ReplacementFeedback = {
+  readonly kind: 'success' | 'error';
+  readonly message: string;
+};
+
 export type BatchOptimizationStatus =
   | 'idle'
   | 'running'
@@ -589,6 +605,54 @@ export function BatchPage({
   const [pieces, setPieces] = useState<BatchPieceDraft[]>([createEmptyDraft()]);
   const [batchFabric, setBatchFabric] = useState('set');
   const [freePngs, setFreePngs] = useState<FreePngDraft[]>([]);
+  const [replacementPieces, setReplacementPieces] = useState<ReplacementPieceDraft[]>([]);
+  const [showReplacementForm, setShowReplacementForm] = useState(false);
+  const [replacementCollectionId, setReplacementCollectionId] = useState(collections[0]?.id ?? '');
+  const [replacementSize, setReplacementSize] = useState<GarmentSize>('T8');
+  const [replacementSide, setReplacementSide] = useState<(typeof PIECE_SIDES)[number]>('front');
+  const [replacementAssetPath, setReplacementAssetPath] = useState('');
+  const [replacementQuantity, setReplacementQuantity] = useState(1);
+  const [replacementFabric, setReplacementFabric] = useState('set');
+  const [replacementFeedback, setReplacementFeedback] = useState<ReplacementFeedback | null>(null);
+  const [isAddingReplacement, setIsAddingReplacement] = useState(false);
+  const [replacementFocusTarget, setReplacementFocusTarget] = useState<'design' | 'quantity' | 'trigger' | null>(null);
+  const addingReplacementRef = useRef(false);
+  const replacementTriggerRef = useRef<HTMLButtonElement>(null);
+  const replacementDesignRef = useRef<HTMLSelectElement>(null);
+  const replacementQuantityRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const selectedCollection = collections.find(collection => collection.id === replacementCollectionId) ?? collections[0];
+    if (!selectedCollection) {
+      if (replacementCollectionId) setReplacementCollectionId('');
+      return;
+    }
+    if (selectedCollection.id !== replacementCollectionId) setReplacementCollectionId(selectedCollection.id);
+    const size = PIECE_SIDES.some(side => findCollectionReplacementAssets(selectedCollection, replacementSize, side).length)
+      ? replacementSize
+      : GARMENT_SIZES.find(candidate => PIECE_SIDES.some(side => findCollectionReplacementAssets(selectedCollection, candidate, side).length));
+    if (size && size !== replacementSize) setReplacementSize(size);
+    const side = size && findCollectionReplacementAssets(selectedCollection, size, replacementSide).length
+      ? replacementSide
+      : size && PIECE_SIDES.find(candidate => findCollectionReplacementAssets(selectedCollection, size, candidate).length);
+    if (side && side !== replacementSide) setReplacementSide(side);
+    const assets = size && side ? findCollectionReplacementAssets(selectedCollection, size, side) : [];
+    if (!assets.some(asset => asset.relativePath === replacementAssetPath)) {
+      setReplacementAssetPath(assets[0]?.relativePath ?? '');
+    }
+  }, [collections, replacementCollectionId, replacementSize, replacementSide, replacementAssetPath]);
+  const replacementCollection = collections.find(collection => collection.id === replacementCollectionId);
+  const replacementAssetOptions = replacementCollection
+    ? findCollectionReplacementAssets(replacementCollection, replacementSize, replacementSide)
+    : [];
+  useEffect(() => {
+    if (replacementFocusTarget === 'design' && showReplacementForm) replacementDesignRef.current?.focus();
+    if (replacementFocusTarget === 'quantity' && showReplacementForm) {
+      replacementQuantityRef.current?.focus();
+      replacementQuantityRef.current?.select();
+    }
+    if (replacementFocusTarget === 'trigger' && !showReplacementForm) replacementTriggerRef.current?.focus();
+    if (replacementFocusTarget) setReplacementFocusTarget(null);
+  }, [replacementFocusTarget, showReplacementForm]);
   const fillActivationCounter = useRef(0);
   const [isImportingPng, setIsImportingPng] = useState(false);
   const mounted = useRef(true);
@@ -834,6 +898,90 @@ export function BatchPage({
     markOptimizationStale();
   }
 
+  async function addReplacementPiece(): Promise<void> {
+    if (addingReplacementRef.current) return;
+    const collection = collections.find(item => item.id === replacementCollectionId);
+    const asset = collection && findCollectionReplacementAssets(collection, replacementSize, replacementSide)
+      .find(candidate => candidate.relativePath === replacementAssetPath);
+    const fabric = replacementFabric.trim();
+    if (!collection || !asset) {
+      setReplacementFeedback({ kind: 'error', message: 'Elegí un diseño, talle y lado disponible en Biblioteca.' });
+      return;
+    }
+    if (!validFreePngQuantity(replacementQuantity) || !fabric) {
+      setReplacementFeedback({ kind: 'error', message: 'Ingresá una tela y una cantidad entera mayor que cero.' });
+      return;
+    }
+
+    addingReplacementRef.current = true;
+    setIsAddingReplacement(true);
+    setReplacementFeedback(null);
+    try {
+      const image = await createImageBitmap(asset.file);
+      try {
+        if (!mounted.current) return;
+        if (image.width * image.height > MAX_SOURCE_PIXELS) {
+          setReplacementFeedback({ kind: 'error', message: `${asset.fileName}: PNG demasiado grande, máximo 16 MP.` });
+          return;
+        }
+        const imageUrl = URL.createObjectURL(asset.file);
+        ownedUrls.current.add(imageUrl);
+        const replacement: ReplacementPieceDraft = {
+          kind: 'replacement-piece',
+          id: crypto.randomUUID(),
+          collectionId: collection.id,
+          model: collection.name,
+          size: asset.size,
+          side: asset.side,
+          fabric,
+          quantity: replacementQuantity,
+          file: asset.file,
+          imageUrl,
+          sourceWidthPx: image.width,
+          sourceHeightPx: image.height,
+        };
+        markOptimizationStale();
+        setReplacementPieces(current => [...current, replacement]);
+        setReplacementFabric(fabric);
+        setReplacementQuantity(1);
+        setReplacementFeedback({ kind: 'success', message: 'Reposición agregada. Podés cargar otra.' });
+        setReplacementFocusTarget('quantity');
+        setStatus(null);
+      } finally {
+        image.close();
+      }
+    } catch (error) {
+      if (mounted.current) {
+        setReplacementFeedback({
+          kind: 'error',
+          message: error instanceof Error ? error.message : 'No se pudo preparar la reposición.',
+        });
+      }
+    } finally {
+      addingReplacementRef.current = false;
+      if (mounted.current) setIsAddingReplacement(false);
+    }
+  }
+
+  function updateReplacementPiece(
+    id: string,
+    patch: Partial<Pick<ReplacementPieceDraft, 'quantity' | 'fabric'>>,
+  ): void {
+    if (patch.quantity !== undefined && !validFreePngQuantity(patch.quantity)) return;
+    markOptimizationStale();
+    setReplacementPieces(current => current.map(piece => piece.id === id ? { ...piece, ...patch } : piece));
+  }
+
+  function removeReplacementPiece(id: string): void {
+    const piece = replacementPieces.find(item => item.id === id);
+    if (piece) {
+      URL.revokeObjectURL(piece.imageUrl);
+      ownedUrls.current.delete(piece.imageUrl);
+    }
+    markOptimizationStale();
+    setReplacementPieces(current => current.filter(piece => piece.id !== id));
+  }
+
   function updatePiece(id: string, patch: Partial<BatchPieceDraft>): void {
     markOptimizationStale();
     setPieces((current) =>
@@ -958,6 +1106,7 @@ export function BatchPage({
     const runStartedAt = diagnosticContext.runStartedAt;
     const allInputPieces: readonly ProductionPieceDraft[] = [
       ...inputPieces,
+      ...replacementPieces,
       ...freePngs,
     ];
 
@@ -1017,7 +1166,7 @@ export function BatchPage({
           }
 
           const template =
-            piece.kind === 'garment'
+            piece.kind !== 'free-png'
               ? findTemplateForDraft(piece, templates)
               : undefined;
 
@@ -1027,16 +1176,24 @@ export function BatchPage({
           );
 
           return {
-            ...(piece.kind === 'garment'
+            ...(piece.kind === 'free-png'
               ? {
-                  kind: 'garment' as const,
+                  kind: 'free-png' as const,
+                  ...(piece.fill ? { fill: piece.fill } : {}),
+                }
+              : piece.kind === 'replacement-piece'
+              ? {
+                  kind: 'replacement-piece' as const,
+                  collectionId: piece.collectionId,
                   model: piece.model.trim(),
                   size: piece.size,
                   side: piece.side,
                 }
               : {
-                  kind: 'free-png' as const,
-                  ...(piece.fill ? { fill: piece.fill } : {}),
+                  kind: 'garment' as const,
+                  model: piece.model.trim(),
+                  size: piece.size,
+                  side: piece.side,
                 }),
             id: piece.id,
             fabric: piece.fabric.trim(),
@@ -1162,7 +1319,7 @@ export function BatchPage({
                   }
                 : {}),
               id: instance.id,
-              kind: instance.definition.kind,
+              kind: instance.definition.kind === 'free-png' ? 'free-png' : 'garment',
               polygon,
               finePolygon,
               ...(collisionComponents ? { collisionComponents } : {}),
@@ -1425,7 +1582,7 @@ export function BatchPage({
         }
       }
 
-      if (generatedPieces.length === 0 && freePngs.length === 0) {
+      if (generatedPieces.length === 0 && freePngs.length === 0 && replacementPieces.length === 0) {
         throw new Error('Ingresá al menos una cantidad mayor que cero.');
       }
       controller.signal.throwIfAborted();
@@ -1637,6 +1794,9 @@ export function BatchPage({
             <p className="batch-selection-summary">
               {selectedGarmentCount} prendas seleccionadas · cada prenda genera
               automáticamente un frente y un dorso.
+              {replacementPieces.length > 0
+                ? ` · ${replacementPieces.reduce((total, piece) => total + piece.quantity, 0)} piezas de reposición`
+                : ''}
             </p>
             <button
               className="batch-primary-button production-primary-action"
@@ -1660,6 +1820,28 @@ export function BatchPage({
 
         <section className="collection-batch-browser">
           <div className="collection-browser-heading">
+            <button
+              ref={replacementTriggerRef}
+              type="button"
+              className={`secondary-button${showReplacementForm ? ' is-active' : ''}`}
+              disabled={collections.length === 0 || isOptimizing || isAddingReplacement}
+              aria-expanded={showReplacementForm}
+              aria-controls="replacement-piece-form"
+              onClick={() => {
+                if (showReplacementForm) {
+                  setShowReplacementForm(false);
+                  setReplacementFeedback(null);
+                  setReplacementFocusTarget('trigger');
+                } else {
+                  setReplacementFabric(current => replacementPieces.length > 0 ? current : batchFabric.trim());
+                  setReplacementFeedback(null);
+                  setShowReplacementForm(true);
+                  setReplacementFocusTarget('design');
+                }
+              }}
+            >
+              {showReplacementForm ? 'Cancelar' : 'Agregar reposición'}
+            </button>
             {collections.length > 0 ? (
               <button
                 type="button"
@@ -1673,7 +1855,86 @@ export function BatchPage({
             ) : null}
           </div>
 
-          {collections.length === 0 && freePngs.length === 0 ? (
+          {showReplacementForm ? (
+            <form
+              id="replacement-piece-form"
+              className="replacement-piece-form"
+              aria-label="Agregar reposición"
+              noValidate
+              onSubmit={event => { event.preventDefault(); void addReplacementPiece(); }}
+              onKeyDown={event => {
+                if (event.key === 'Escape' && !isAddingReplacement) {
+                  event.preventDefault();
+                  setShowReplacementForm(false);
+                  setReplacementFeedback(null);
+                  setReplacementFocusTarget('trigger');
+                }
+              }}
+            >
+              <fieldset disabled={isAddingReplacement}>
+                <label>Diseño
+                  <select
+                    ref={replacementDesignRef}
+                    value={replacementCollectionId}
+                    onChange={event => {
+                      const collectionId = event.target.value;
+                      setReplacementCollectionId(collectionId);
+                      setReplacementFeedback(null);
+                    }}
+                  >
+                    {[...collections].sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base', numeric: true })).map(collection => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
+                  </select>
+                </label>
+                <label>Talle
+                  <select value={replacementSize} onChange={event => {
+                    const size = event.target.value as GarmentSize;
+                    setReplacementSize(size);
+                    setReplacementFeedback(null);
+                  }}>
+                    {GARMENT_SIZES.map(size => <option key={size} value={size} disabled={!replacementCollection || !PIECE_SIDES.some(side => findCollectionReplacementAssets(replacementCollection, size, side).length)}>{size}</option>)}
+                  </select>
+                </label>
+                <label>Lado
+                  <select value={replacementSide} onChange={event => { setReplacementSide(event.target.value as (typeof PIECE_SIDES)[number]); setReplacementFeedback(null); }}>
+                    {PIECE_SIDES.map(side => {
+                      const available = Boolean(replacementCollection && findCollectionReplacementAssets(replacementCollection, replacementSize, side).length);
+                      return <option key={side} value={side} disabled={!available}>{getPieceSideLabel(side)}</option>;
+                    })}
+                  </select>
+                </label>
+                <label className="replacement-piece-form__asset">Archivo de Biblioteca
+                  <select value={replacementAssetPath} onChange={event => { setReplacementAssetPath(event.target.value); setReplacementFeedback(null); }}>
+                    {replacementAssetOptions.map(asset => <option key={asset.relativePath} value={asset.relativePath}>{asset.relativePath}</option>)}
+                  </select>
+                </label>
+                <label>Cantidad
+                  <input
+                    ref={replacementQuantityRef}
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={replacementQuantity}
+                    onChange={event => { setReplacementQuantity(Number(event.target.value) || 0); setReplacementFeedback(null); }}
+                  />
+                </label>
+                <label>Tela
+                  <input type="text" value={replacementFabric} onChange={event => { setReplacementFabric(event.target.value); setReplacementFeedback(null); }} />
+                </label>
+                <div className="replacement-piece-form__actions">
+                  <button type="submit" className="batch-primary-button" disabled={isAddingReplacement}>
+                    {isAddingReplacement ? 'Agregando…' : 'Agregar pieza'}
+                  </button>
+                </div>
+              </fieldset>
+              {replacementFeedback ? (
+                <p className={`replacement-feedback is-${replacementFeedback.kind}`} role={replacementFeedback.kind === 'error' ? 'alert' : 'status'}>
+                  {replacementFeedback.message}
+                </p>
+              ) : null}
+            </form>
+          ) : null}
+
+          {collections.length === 0 && freePngs.length === 0 && replacementPieces.length === 0 ? (
             <div className="empty-state production-empty">
               <span className="status-badge">PENDIENTE</span>
               <h2>No hay piezas en el batch</h2>
@@ -1810,6 +2071,24 @@ export function BatchPage({
             </div>
           )}
         </section>
+
+        {replacementPieces.length > 0 ? (
+          <section className="replacement-piece-list" aria-label="Piezas de reposición">
+            <h3>Reposiciones</h3>
+            <ul className="free-png-list">
+              {replacementPieces.map(piece => (
+                <li className="free-png-row" key={piece.id}>
+                  <img src={piece.imageUrl} alt={`${piece.model} ${piece.size} ${getPieceSideLabel(piece.side)}`} />
+                  <strong>{piece.model} · {piece.size} · {getPieceSideLabel(piece.side)}</strong>
+                  <span>{piece.file.name}</span>
+                  <label>Cantidad <input type="number" min="1" step="1" value={piece.quantity} onChange={event => updateReplacementPiece(piece.id, { quantity: Number(event.target.value) || 0 })} /></label>
+                  <label>Tela <input type="text" value={piece.fabric} onChange={event => updateReplacementPiece(piece.id, { fabric: event.target.value })} /></label>
+                  <button className="free-png-remove" type="button" aria-label={`Eliminar reposición ${piece.model} ${piece.size} ${getPieceSideLabel(piece.side)}`} onClick={() => removeReplacementPiece(piece.id)}>×</button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <FreePngPanel
           pieces={freePngs}
@@ -2074,6 +2353,7 @@ export function BatchPage({
                             <div><strong>{result.layouts.length}</strong><span>CANVAS</span></div>
                             <div><strong>{formatMeters(result.layouts.reduce((total, layout) => total + layout.usedHeight, 0))} m</strong><span>METROS</span></div>
                             <div><strong>{placement.placedGarments}/{placement.totalGarments}</strong><span>PRENDAS</span></div>
+                            {placement.totalReplacements > 0 ? <div><strong>{placement.placedReplacements}/{placement.totalReplacements}</strong><span>REPOSICIONES</span></div> : null}
                             <div><strong>{(result.elapsedMs / 1000).toFixed(2)} s</strong><span>TIEMPO</span></div>
                           </div>
                           <p
@@ -2085,6 +2365,9 @@ export function BatchPage({
                           >
                             {placement.placedGarments}/{placement.totalGarments}{' '}
                             prendas colocadas
+                            {placement.totalReplacements > 0
+                              ? ` · ${placement.placedReplacements}/${placement.totalReplacements} reposiciones colocadas`
+                              : ''}
                             {placement.totalRequiredPngs > 0
                               ? ` · ${placement.placedRequiredPngs}/${placement.totalRequiredPngs} PNG requeridos colocados`
                               : ''}

@@ -1,5 +1,5 @@
 import type { PieceSide } from './piece-side';
-import type { GarmentSize } from './size';
+import { GARMENT_SIZES, type GarmentSize } from './size';
 
 export interface ParsedDesignAssetFilename {
   readonly size: GarmentSize;
@@ -90,4 +90,25 @@ export function parseDesignAssetFilename(
     side: sideText.toUpperCase() === 'FRENTE' ? 'front' : 'back',
     designName,
   };
+}
+
+/** Reposición only: preserve the strict parser used to pair full garments. */
+export function parseReplacementAssetFilename(
+  fileName: string,
+): ParsedDesignAssetFilename | null {
+  // Productive convention: "nom" anywhere in the PNG basename means BACK.
+  // Do not infer a design from this filename; Library owns the folder association.
+  const basename = /^([^\\/]+)\.png$/i.exec(fileName)?.[1];
+  if (!basename) return null;
+  if (!/nom/i.test(basename)) return parseDesignAssetFilename(fileName);
+
+  // Only separate T tokens are sizes, never digits embedded in a name/code.
+  // Reject unknown or conflicting sizes instead of choosing one arbitrarily.
+  const sizes = new Set(Array.from(
+    basename.matchAll(/(?:^|[ _-])T(\d+)(?=$|[ _-])/gi),
+    match => `T${match[1]}`,
+  ));
+  const size = [...sizes][0];
+  if (sizes.size !== 1 || !GARMENT_SIZES.some(valid => valid === size)) return null;
+  return { size: size as GarmentSize, side: 'back' };
 }

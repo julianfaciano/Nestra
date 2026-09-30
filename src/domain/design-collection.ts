@@ -1,5 +1,6 @@
 import {
   parseDesignAssetFilename,
+  parseReplacementAssetFilename,
   type ParsedDesignAssetFilename,
 } from './design-asset-filename';
 import { GARMENT_SIZES, type GarmentSize } from './size';
@@ -24,6 +25,7 @@ export interface MissingDesignAsset {
 export interface DesignCollectionScanResult {
   readonly name: string;
   readonly assets: readonly DesignCollectionAssetDescriptor[];
+  readonly replacementAssets: readonly DesignCollectionAssetDescriptor[];
   readonly missing: readonly MissingDesignAsset[];
   readonly duplicateSlots: readonly string[];
   readonly ignoredFileNames: readonly string[];
@@ -63,6 +65,7 @@ export function scanDesignCollection(
     return {
       name: 'Diseño importado',
       assets: [],
+      replacementAssets: [],
       missing: GARMENT_SIZES.flatMap((size) =>
         PIECE_SIDES.map((side) => ({
           size,
@@ -77,30 +80,45 @@ export function scanDesignCollection(
   let name = collectionNameFromRelativePath(files[0]?.relativePath ?? '');
 
   const assets: DesignCollectionAssetDescriptor[] = [];
+  const replacementAssets: DesignCollectionAssetDescriptor[] = [];
   const ignoredFileNames: string[] = [];
   const duplicateSlots: string[] = [];
   const usedSlots = new Set<string>();
 
   for (const file of files) {
-    const parsed = parseDesignAssetFilename(file.fileName);
+    // Named sources are replacement-only even if their remaining tokens would
+    // otherwise match a canonical FRONT/BACK filename. They never claim a slot.
+    const parsed = /nom/i.test(file.fileName.replace(/\.png$/i, ''))
+      ? null
+      : parseDesignAssetFilename(file.fileName);
 
     if (!parsed) {
+      const replacement = parseReplacementAssetFilename(file.fileName);
+      if (replacement?.side === 'back') {
+        if (!replacementAssets.some(asset => asset.relativePath === file.relativePath)) {
+          replacementAssets.push({ ...file, size: replacement.size, side: replacement.side });
+        }
+        continue;
+      }
       ignoredFileNames.push(file.fileName);
       continue;
-    }
-
-    if (parsed.designName) {
-      name = parsed.designName;
     }
 
     const key = slotKey(parsed.size, parsed.side);
 
     if (usedSlots.has(key)) {
       duplicateSlots.push(key);
+      if (parsed.side === 'back' && ![...assets, ...replacementAssets].some(asset => asset.relativePath === file.relativePath)) {
+        replacementAssets.push({ ...file, size: parsed.size, side: parsed.side });
+      }
       continue;
     }
 
     usedSlots.add(key);
+
+    if (parsed.designName) {
+      name = parsed.designName;
+    }
 
     assets.push({
       fileName: file.fileName,
@@ -126,6 +144,7 @@ export function scanDesignCollection(
   return {
     name,
     assets,
+    replacementAssets,
     missing,
     duplicateSlots,
     ignoredFileNames,

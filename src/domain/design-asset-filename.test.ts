@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseDesignAssetFilename } from './design-asset-filename';
+import { parseDesignAssetFilename, parseReplacementAssetFilename } from './design-asset-filename';
 
 describe('parseDesignAssetFilename', () => {
   it('reconoce T1 frente', () => {
@@ -132,5 +132,48 @@ describe('parseDesignAssetFilename', () => {
         'ARG26E_0004_T3-FRENTE.psd',
       ),
     ).toBeNull();
+  });
+});
+
+describe('parseReplacementAssetFilename', () => {
+  it.each([
+    ['aanomBENJI ARG26E_0019_T10-DORSO.png', 'T10'],
+    ['aanomCHICHA ARG26E_0009_T5-DORSO.png', 'T5'],
+  ] as const)('identifies the existing personalized format %s only for replacement', (name, size) => {
+    expect(parseReplacementAssetFilename(name)).toEqual({ size, side: 'back' });
+    expect(parseDesignAssetFilename(name)).toBeNull();
+  });
+
+  it.each([
+    'preview.png', 'JUAN.png',
+    'aanomJUAN ARG26E_0019_T11-DORSO.png',
+    'JUAN ARG26E_0019_T10-DORSO.png',
+    'aanomJUAN ARG26E_0019_T10-DORSO.png.bak',
+    'nomJUANT4.png', 'nom_T40.png', 'nom_T04.png', 'nom_T0.png',
+    'nom_T4_T8.png', 'nom_T4_T11.png', 'nom/file_T4.png',
+    'nom_modelo_2026_4.png',
+  ])('rejects arbitrary or ambiguous source %s', name => {
+    expect(parseReplacementAssetFilename(name)).toBeNull();
+  });
+
+  it.each([
+    ['aanomFIRULAIS SLE_D_T4.png', 'T4'],
+    ['aanomFIRULAISLE_D_T4.png', 'T4'],
+    ['NOMJUAN_SLE_D_T4.png', 'T4'],
+    ['PedroNomSLE_D_T8.png', 'T8'],
+    ['abc_nom_algo_T10.png', 'T10'],
+    ['abc_nOm_algo_t10.PNG', 'T10'],
+    ['T4_nom.png', 'T4'],
+    ['nom-T4-edicion.png', 'T4'],
+    ['nom T4 edicion.png', 'T4'],
+    ['aanomJUAN ARG26E_0007_T5-DORSO.png', 'T5'],
+    ['aanomJUAN ARG26E_0018_T10-FRENTE.png', 'T10'],
+    ['aanomJUAN preview T8 BACK.png', 'T8'],
+  ] as const)('recognizes the productive nom convention %s as BACK %s', (name, size) => {
+    expect(parseReplacementAssetFilename(name)).toEqual({ size, side: 'back' });
+  });
+
+  it.each(Array.from({ length: 10 }, (_, index) => index + 1))('supports existing size T%s with nom', number => {
+    expect(parseReplacementAssetFilename(`nom_SLE_T${number}.png`)).toEqual({ size: `T${number}`, side: 'back' });
   });
 });

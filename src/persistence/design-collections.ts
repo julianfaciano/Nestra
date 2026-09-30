@@ -28,6 +28,7 @@ interface StoredDesignCollection {
   readonly id: string;
   readonly name: string;
   readonly assets: readonly StoredDesignAsset[];
+  readonly replacementAssets?: readonly StoredDesignAsset[];
   readonly masterAssets?: readonly StoredDesignMasterAsset[];
   readonly missing: DesignCollection['missing'];
   readonly duplicateSlots: readonly string[];
@@ -87,6 +88,16 @@ export function serializeDesignCollections(
           },
         ),
       })),
+
+      ...(collection.replacementAssets ? {
+        replacementAssets: collection.replacementAssets.map(asset => ({
+          size: asset.size,
+          side: asset.side,
+          fileName: asset.fileName,
+          relativePath: asset.relativePath,
+          image: new Blob([asset.file], { type: 'image/png' }),
+        })),
+      } : {}),
 
       ...(collection.masterAssets
         ? {
@@ -191,6 +202,22 @@ export function validateStoredDesignCollections(
       }
 
       slots.add(slot);
+    }
+
+    if (collection.replacementAssets !== undefined) {
+      if (!Array.isArray(collection.replacementAssets) || collection.replacementAssets.length > 1000) {
+        throw new Error('Reposiciones inválidas en colección de diseños.');
+      }
+      const paths = new Set(collection.assets.map(asset => String(asset.relativePath)));
+      for (const asset of collection.replacementAssets) {
+        if (!record(asset) || !GARMENT_SIZES.some(size => size === asset.size) ||
+            asset.side !== 'back' || typeof asset.fileName !== 'string' ||
+            typeof asset.relativePath !== 'string' || !asset.relativePath || !isPngBlob(asset.image) ||
+            paths.has(asset.relativePath)) {
+          throw new Error('Archivo de reposición inválido en colección de diseños.');
+        }
+        paths.add(asset.relativePath);
+      }
     }
 
     if (collection.masterAssets !== undefined) {
@@ -350,6 +377,16 @@ export async function loadDesignCollections(): Promise<
           },
         ),
       })),
+
+      ...(collection.replacementAssets ? {
+        replacementAssets: collection.replacementAssets.map(asset => ({
+          size: asset.size,
+          side: asset.side,
+          fileName: asset.fileName,
+          relativePath: asset.relativePath,
+          file: new File([asset.image], asset.fileName, { type: 'image/png' }),
+        })),
+      } : {}),
 
       ...(collection.masterAssets
         ? {

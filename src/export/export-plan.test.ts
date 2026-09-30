@@ -13,7 +13,7 @@ import {
 } from './export-plan';
 
 const polygon = [{x:0,y:0},{x:10,y:0},{x:10,y:20},{x:0,y:20}];
-const definition = (id:string, side:'front'|'back'): BatchPieceDefinition => ({
+const definition = (id:string, side:'front'|'back'): Extract<BatchPieceDefinition, {kind:'garment'}> => ({
   kind: 'garment',
   id, side, model:'River', size:'T8', fabric:'polar', quantity:1, fileName:id+'.png',
   imageUrl:'blob:'+id, sourceWidthPx:100, sourceHeightPx:200,
@@ -73,6 +73,50 @@ describe('Preflight y plan de exportación', () => {
   });
   it('bloquea frentes sin dorsos', () => {
     const b=batch(); expect(preflightBatch({...b,definitions:[b.definitions[0]!]}).errors.join()).toContain('Frente/dorso');
+  });
+  it('permite exportar un dorso de reposición sin frente counterpart', () => {
+    const replacement: BatchPieceDefinition = {
+      ...definition('replacement', 'back'),
+      kind: 'replacement-piece',
+      collectionId: 'boca-2026',
+      model: 'Boca 2026',
+      size: 'T5',
+      quantity: 1,
+    };
+    const report = preflightBatch({
+      profile: DEFAULT_IMPRENTA_PROFILE,
+      definitions: [replacement],
+      polygons: new Map([['replacement', polygon]]),
+      results: [{
+        fabric: 'polar', elapsedMs: 0, unplacedPieceIds: [],
+        layouts: [{ index: 0, usedWidth: 20, usedHeight: 20, pieces: [{
+          pieceId: 'replacement-1', placement: { x: 0, y: 0, rotation: 180 },
+          polygon: transformPolygon(polygon, { x: 0, y: 0, rotation: 180 }),
+        }] }],
+      }],
+    });
+    expect(report.errors).toEqual([]);
+    expect(report.layouts[0]?.pieces).toHaveLength(1);
+    expect(report.layouts[0]?.pieces[0]?.definition.kind).toBe('replacement-piece');
+    expect(preflightBatch({
+      profile: DEFAULT_CALANDRA_PROFILE,
+      definitions: [replacement],
+      polygons: new Map([['replacement', polygon]]),
+      results: [{ fabric: 'polar', elapsedMs: 0, unplacedPieceIds: [], layouts: [{ index: 0, usedWidth: 20, usedHeight: 20, pieces: [{
+        pieceId: 'replacement-1', placement: { x: 0, y: 0, rotation: 180 },
+        polygon: transformPolygon(polygon, { x: 0, y: 0, rotation: 180 }),
+      }] }] }],
+    }).errors).toEqual([]);
+  });
+  it('admite frente de reposición a 90 grados y rechaza dorso a 90 grados', () => {
+    const front: BatchPieceDefinition = { ...definition('replacement-front', 'front'), kind: 'replacement-piece', collectionId: 'argentina', model: 'Argentina', size: 'T8' };
+    const back: BatchPieceDefinition = { ...front, id: 'replacement-back', side: 'back' };
+    const makeBatch = (d: BatchPieceDefinition, rotation: 0 | 90 | -90 | 180): PreparedBatch => ({
+      profile: DEFAULT_IMPRENTA_PROFILE, definitions: [d], polygons: new Map([[d.id, polygon]]),
+      results: [{ fabric: 'polar', elapsedMs: 0, unplacedPieceIds: [], layouts: [{ index: 0, usedWidth: 20, usedHeight: 20, pieces: [{ pieceId: `${d.id}-1`, placement: { x: 0, y: 0, rotation }, polygon: transformPolygon(polygon, { x: 0, y: 0, rotation }) }] }] }],
+    });
+    expect(preflightBatch(makeBatch(front, 90)).errors).toEqual([]);
+    expect(preflightBatch(makeBatch(back, 90)).errors.join()).toContain('rotación');
   });
   it('permite frente y dorso en canvases distintos', () => {
     const b=batch(),r=b.results[0]!,l=r.layouts[0]!;
