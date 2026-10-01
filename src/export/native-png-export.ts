@@ -5,6 +5,7 @@ import { prepareExportSourceBlob, sourceCropKey } from './export-source-crop';
 
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 export interface NativePngPlan {
+  laserOutline?: { width: number; contours: number[][][] };
   name: string;
   width: number;
   height: number;
@@ -38,7 +39,13 @@ export interface PngExportDiagnostics {
   layouts: NativeRenderDiagnostics[];
 }
 export function nativePngPlan(layout: ExportLayout, sources: ReadonlyMap<string, number>): NativePngPlan {
+  if (layout.laserOutline && layout.pieces.some(art => !art.cutComponents?.length)) {
+    throw new Error('Falta el contorno de corte para la exportación láser.');
+  }
   return {
+    ...(layout.laserOutline ? {laserOutline:{width:layout.laserOutline.widthMm*PX_PER_MM,
+      contours:layout.pieces.flatMap(art => (art.cutComponents ?? []).map(p => p.map(v =>
+        [(v.x-layout.offsetX)*PX_PER_MM,(v.y-layout.offsetY)*PX_PER_MM])))}} : {}),
     name: layout.name, width: layout.widthPx, height: layout.heightPx,
     offsetX: layout.offsetX * PX_PER_MM, offsetY: layout.offsetY * PX_PER_MM,
     pieces: layout.pieces.map(art => {

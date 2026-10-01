@@ -1,6 +1,7 @@
 mod design_import;
 mod historical_import;
 mod historical_import_paths;
+mod molds;
 mod native_png;
 mod pdf_prototype;
 mod png_export;
@@ -31,10 +32,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             design_import::choose_design_folder,
+            design_import::choose_design_folders,
             design_import::choose_free_png,
             design_import::read_design_folder_from_path,
+            design_import::read_design_folder_direct_from_path,
+            design_import::list_design_subfolders,
+            design_import::inspect_design_directory,
+            design_import::design_source_paths_status,
+            molds::choose_molds_output_folder,
+            molds::write_mold_png,
             historical_import::choose_historical_jobs,
             historical_import::load_historical_thumbnail,
+            historical_import::load_historical_source_preview,
             historical_import::delete_historical_thumbnail,
             png_export::choose_export_folder,
             png_export::resolve_export_destination,

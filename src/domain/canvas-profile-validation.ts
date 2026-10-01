@@ -1,11 +1,20 @@
 import {
-  HARD_MAX_CALANDRA_HEIGHT,
+  canvasProfileHeightLimit,
+  nominalSilhouetteClearanceMm,
+  outlineExtentMm,
   HARD_MAX_CANVAS_WIDTH,
   type CanvasProfile,
 } from './canvas-profile';
 
 export interface CanvasProfileValidationError {
-  readonly field: 'id' | 'name' | 'maxWidth' | 'maxHeight' | 'defaultPpi';
+  readonly field:
+    | 'id'
+    | 'name'
+    | 'maxWidth'
+    | 'maxHeight'
+    | 'defaultPpi'
+    | 'minimumVisibleGapMm'
+    | 'laserCutOutlineWidthMm';
   readonly message: string;
 }
 
@@ -48,12 +57,12 @@ export function validateCanvasProfile(
   }
 
   if (
-    profile.kind === 'calandra' &&
-    profile.maxHeight > HARD_MAX_CALANDRA_HEIGHT
+    profile.kind !== 'imprenta' &&
+    profile.maxHeight > canvasProfileHeightLimit(profile)
   ) {
     errors.push({
       field: 'maxHeight',
-      message: 'Calandra no puede superar los 5000 mm de largo.',
+      message: `${profile.name} no puede superar los ${canvasProfileHeightLimit(profile)} mm de largo.`,
     });
   }
 
@@ -64,6 +73,27 @@ export function validateCanvasProfile(
     });
   }
 
+  if (
+    !Number.isFinite(profile.minimumVisibleGapMm ?? 0) ||
+    (profile.minimumVisibleGapMm ?? 0) < 0
+  ) {
+    errors.push({
+      field: 'minimumVisibleGapMm',
+      message: 'La separación libre visible debe ser finita y no negativa.',
+    });
+  }
+  if (
+    profile.laserCutOutline &&
+    (!Number.isFinite(outlineExtentMm(profile)) ||
+      outlineExtentMm(profile) <= 0 ||
+      !Number.isFinite(nominalSilhouetteClearanceMm(profile)))
+  ) {
+    errors.push({
+      field: 'laserCutOutlineWidthMm',
+      message:
+        'El grosor láser debe ser finito y positivo.',
+    });
+  }
   return errors;
 }
 

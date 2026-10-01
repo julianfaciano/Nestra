@@ -23,6 +23,8 @@ function geometryAndOrder(json: string): string {
     scanStepMm: input.scanStepMm ?? 10,
     pieces: input.pieces.map(piece => ({
       polygon: piece.polygon,
+      cutComponents: piece.cutComponents,
+      cutAnchor: piece.cutAnchor,
       allowedRotations: piece.allowedRotations,
     })),
   });

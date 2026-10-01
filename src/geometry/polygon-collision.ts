@@ -125,7 +125,7 @@ function segmentsProperlyIntersect(
   return c1 * c2 < -EPSILON && c3 * c4 < -EPSILON;
 }
 
-function pointIsStrictlyInsidePolygon(
+export function pointIsStrictlyInsidePolygon(
   point: Point2D,
   polygon: Polygon,
   edges?: readonly number[],

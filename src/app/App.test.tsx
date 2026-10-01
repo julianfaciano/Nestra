@@ -30,4 +30,15 @@ describe('App', () => {
 
     expect(screen.getByText('0 diseños importados')).toBeInTheDocument();
   });
+
+  it('permite abrir Moldes desde la navegación principal', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Moldes' }));
+
+    expect(screen.getByRole('heading', { name: 'Moldes' })).toBeInTheDocument();
+    expect(screen.getByText('Master base · T8')).toBeInTheDocument();
+    expect(screen.getByText(/no depende de la Biblioteca ni de que el diseño destino ya tenga T1–T10/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Generar y guardar 20 archivos' })).toBeDisabled();
+  });
 });

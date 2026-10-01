@@ -19,6 +19,11 @@ function ExportArtwork({ layout }: { readonly layout: ExportLayout }) {
           transform={`translate(${art.translateX} ${art.translateY}) rotate(${art.placement.rotation})`}
         />
       ))}
+      {layout.laserOutline ? layout.pieces.flatMap((art,i) => (art.cutComponents ?? []).map((p,j) => (
+        <polygon key={`cut-${i}-${j}`} points={p.map(v=>`${v.x},${v.y}`).join(' ')}
+          fill="none" stroke={layout.laserOutline!.color} strokeWidth={layout.laserOutline!.widthMm}
+          strokeLinejoin="round" strokeLinecap="round" />
+      ))) : null}
     </svg>
   );
 }
@@ -73,6 +78,11 @@ export function BatchExportPanel({
               {fileCount}{' '}
               {fileCount === 1 ? 'archivo exportado' : 'archivos exportados'}
               <span aria-hidden="true">↗</span>
+            </>
+          ) : exporting ? (
+            <>
+              Exportando…
+              <span className="batch-export-spinner" aria-hidden="true" />
             </>
           ) : (
             <>

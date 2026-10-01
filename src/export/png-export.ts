@@ -1,3 +1,4 @@
+import { drawLaserOutlines } from './laser-outline';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { preflightBatch, PX_PER_MM, type ExportLayout, type PreparedBatch } from './export-plan';
 
@@ -52,6 +53,7 @@ export function drawStrip(context: CanvasRenderingContext2D, layout: ExportLayou
     }
     context.restore();
   }
+  drawLaserOutlines(context,layout,PX_PER_MM,y);
 }
 
 export async function exportBatchPngLegacy(batch: PreparedBatch, signal: AbortSignal, progress: (text: string) => void): Promise<string[]> {

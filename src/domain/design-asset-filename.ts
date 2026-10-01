@@ -112,3 +112,12 @@ export function parseReplacementAssetFilename(
   if (sizes.size !== 1 || !GARMENT_SIZES.some(valid => valid === size)) return null;
   return { size: size as GarmentSize, side: 'back' };
 }
+
+/** True when a direct PNG basename identifies a productive asset understood by Library. */
+export function isRecognizableDesignAssetFilename(fileName: string): boolean {
+  if (/^00.+\((F|D)\)\.png$/i.test(fileName)) return true;
+  const parsed = /nom/i.test(fileName.replace(/\.png$/i, ''))
+    ? parseReplacementAssetFilename(fileName)
+    : parseDesignAssetFilename(fileName);
+  return parsed !== null;
+}

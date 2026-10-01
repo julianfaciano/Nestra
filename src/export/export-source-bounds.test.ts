@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CALANDRA_PROFILE, DEFAULT_IMPRENTA_PROFILE } from '../domain/canvas-profile';
+import { DEFAULT_CALANDRA_PROFILE, DEFAULT_IMPRENTA_PROFILE, DEFAULT_IMPRENTA_2_PROFILE } from '../domain/canvas-profile';
 import type { BatchPieceDefinition } from '../domain/production-batch';
 import { mm } from '../domain/units';
 import { extractAlphaPixelBounds } from '../geometry/alpha-polygon';
 import type { Polygon } from '../geometry/polygon';
-import { transformPolygon, type PolygonPlacement } from '../geometry/polygon-transform';
+import { getPolygonBounds, transformPolygon, type PolygonPlacement } from '../geometry/polygon-transform';
 import { nativePngPlan } from './native-png-export';
 import { PX_PER_MM, preflightBatch, type PreparedBatch } from './export-plan';
 
@@ -87,6 +87,22 @@ function batch(
 }
 
 describe('límites alpha del plan de exportación', () => {
+  it.each([0,90,-90,180] as const)('Imprenta 2 preserves asymmetric alpha crop / placement anchor at %s degrees', rotation => {
+    const d=definition('laser-origin',10,8);
+    const polygon=rect(1,2,4,3);
+    const bounds=new Map([['laser-origin',{x:1,y:2,width:4,height:3}]]);
+    const input={...batch([d],new Map([[d.id,polygon]]),bounds,[[{id:d.id,placement:{x:100,y:200,rotation}}]],false,bounds),
+      profile:DEFAULT_IMPRENTA_2_PROFILE,cutComponents:new Map([[d.id,[polygon]]])};
+    const report=preflightBatch(input);
+    expect(report.errors).toEqual([]);
+    const layout=report.layouts[0]!;
+    expect(getPolygonBounds(layout.pieces[0]!.cutComponents!.flat())).toMatchObject({minX:100,minY:200});
+    expect(layout.pieces[0]!.sourceCrop).toMatchObject({xPx:1,yPx:2,widthPx:4,heightPx:3});
+    const plan=nativePngPlan(layout,new Map([[d.id,0]]));
+    expect(plan.pieces[0]!.width/PX_PER_MM).toBeCloseTo(4,10);
+    expect(plan.pieces[0]!.height/PX_PER_MM).toBeCloseTo(3,10);
+    expect(Math.min(...plan.laserOutline!.contours[0]!.map(v=>v[1]!))).toBeCloseTo(1.5*PX_PER_MM,9);
+  });
   it.each([
     { rotation: 0 as const, x: 100, y: 200 },
     { rotation: 90 as const, x: 103, y: 200 },

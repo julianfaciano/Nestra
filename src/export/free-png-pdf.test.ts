@@ -9,6 +9,7 @@ import {
 import { nativePngPlan } from './native-png-export';
 import { preflightBatch } from './export-plan';
 import { fillBatch, fillDefinition } from '../test/fill-gaps-fixture';
+import { laserBatch } from '../test/imprenta-2-fixture';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
@@ -17,6 +18,22 @@ vi.mock('@tauri-apps/api/core', () => ({
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+it('sends every laser contour and the configured width to PDF through the shared native PNG plan', async () => {
+  const batch = laserBatch();
+  vi.stubGlobal('crypto', webcrypto);
+  vi.stubGlobal('fetch', vi.fn(async () => ({ok:true,arrayBuffer:async()=>new Uint8Array([137,80,78,71]).buffer})));
+  vi.spyOn(console,'info').mockImplementation(()=>{});
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command==='begin_pdf_prototype') return 'laser';
+    if (command==='finish_pdf_prototype') return {path:'laser.pdf',outputBytes:100,totalMs:1};
+    return undefined;
+  });
+  expect(await exportPdfPrototype(batch,new AbortController().signal,vi.fn())).toEqual(['laser.pdf']);
+  const expected=nativePngPlan(preflightBatch(batch).layouts[0]!,new Map([['cut',0]]));
+  expect(expected.laserOutline!.contours).toHaveLength(2);
+  expect(invoke).toHaveBeenCalledWith('finish_pdf_prototype',{id:'laser',plan:expected});
 });
 
 it('uploads each filler source once and sends every required and extra placement to the same PDF', async () => {

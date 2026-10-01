@@ -7,10 +7,14 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 use tauri::Manager;
 
 const THUMBNAIL_MAX_PX: u32 = 900;
 const THUMBNAIL_JPEG_QUALITY: u8 = 78;
+const LIGHTBOX_MAX_PX: u32 = 2400;
+const LIGHTBOX_JPEG_QUALITY: u8 = 90;
+const LIGHTBOX_MAX_SOURCE_PIXELS: u64 = 100_000_000;
 const HEADER_READ_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Serialize)]
@@ -487,6 +491,116 @@ pub fn load_historical_thumbnail(app: tauri::AppHandle, key: String) -> Result<V
     fs::read(path).map_err(|error| error.to_string())
 }
 
+fn historical_cache_stem(key: &str) -> Result<&str, String> {
+    let path = Path::new(key);
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return Err("Thumbnail histórico inválido.".to_string());
+    };
+    if path.file_name().and_then(|value| value.to_str()) != Some(key)
+        || path.extension().and_then(|value| value.to_str()) != Some("jpg")
+        || stem.len() != 16
+        || !stem.chars().all(|character| character.is_ascii_hexdigit())
+    {
+        return Err("Thumbnail histórico inválido.".to_string());
+    }
+    Ok(stem)
+}
+
+fn load_historical_source_preview_blocking(
+    app: &tauri::AppHandle,
+    root: &str,
+    source_path: &str,
+    thumbnail_key: &str,
+) -> Result<Vec<u8>, String> {
+    let stem = historical_cache_stem(thumbnail_key)?;
+    if !Path::new(root).is_absolute() || !Path::new(source_path).is_absolute() {
+        return Err("La ruta histórica debe ser absoluta.".to_string());
+    }
+    let root = Path::new(root)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let source = Path::new(source_path)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !root.is_dir() || !source.is_file() || !source.starts_with(&root) {
+        return Err("La fuente histórica no pertenece a la carpeta importada.".to_string());
+    }
+
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
+        return Err("El archivo histórico no es una imagen compatible.".to_string());
+    }
+
+    let metadata = fs::metadata(&source).map_err(|error| error.to_string())?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let cache_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("historical-thumbnails");
+    fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
+    let cached = cache_dir.join(format!("{stem}.hires-{}-{modified_ns}.jpg", metadata.len()));
+    if cached.is_file() {
+        return fs::read(cached).map_err(|error| error.to_string());
+    }
+
+    let dimensions_reader = ImageReader::open(&source)
+        .map_err(|error| error.to_string())?
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
+    let (width, height) = dimensions_reader
+        .into_dimensions()
+        .map_err(|error| error.to_string())?;
+    if width == 0
+        || height == 0
+        || (width as u64).saturating_mul(height as u64) > LIGHTBOX_MAX_SOURCE_PIXELS
+    {
+        return Err("La imagen supera el límite seguro para regenerar el preview.".to_string());
+    }
+    let mut reader = ImageReader::open(&source)
+        .map_err(|error| error.to_string())?
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
+    reader.no_limits();
+    let decoded = reader.decode().map_err(|error| error.to_string())?;
+    let thumbnail = decoded.thumbnail(LIGHTBOX_MAX_PX, LIGHTBOX_MAX_PX);
+    let rgb = flatten_to_white(&thumbnail.to_rgba8());
+    let mut encoded = Vec::new();
+    JpegEncoder::new_with_quality(&mut encoded, LIGHTBOX_JPEG_QUALITY)
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            ExtendedColorType::Rgb8,
+        )
+        .map_err(|error| error.to_string())?;
+    fs::write(&cached, &encoded).map_err(|error| error.to_string())?;
+    Ok(encoded)
+}
+
+#[tauri::command]
+pub async fn load_historical_source_preview(
+    app: tauri::AppHandle,
+    root: String,
+    path: String,
+    thumbnail_key: String,
+) -> Result<Vec<u8>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        load_historical_source_preview_blocking(&app, &root, &path, &thumbnail_key)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub fn delete_historical_thumbnail(app: tauri::AppHandle, key: String) -> Result<(), String> {
     /*
@@ -494,11 +608,7 @@ pub fn delete_historical_thumbnail(app: tauri::AppHandle, key: String) -> Result
      * solamente un nombre de archivo simple.
      * Nunca una ruta arbitraria.
      */
-    let file_name = Path::new(&key).file_name().and_then(|value| value.to_str());
-
-    if file_name != Some(key.as_str()) {
-        return Err("Thumbnail histórico inválido.".to_string());
-    }
+    let stem = historical_cache_stem(&key)?.to_owned();
 
     let path = app
         .path()
@@ -508,14 +618,34 @@ pub fn delete_historical_thumbnail(app: tauri::AppHandle, key: String) -> Result
         .join(key);
 
     match fs::remove_file(path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {}
 
         /*
          * Si ya había sido eliminado,
          * consideramos la limpieza exitosa.
          */
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
 
-        Err(error) => Err(error.to_string()),
+        Err(error) => return Err(error.to_string()),
+    };
+
+    if let Ok(entries) = fs::read_dir(
+        app.path()
+            .app_local_data_dir()
+            .map_err(|error| error.to_string())?
+            .join("historical-thumbnails"),
+    ) {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            let Some(name) = candidate.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if name.starts_with(&format!("{stem}.hires-"))
+                && candidate.extension().and_then(|value| value.to_str()) == Some("jpg")
+            {
+                let _ = fs::remove_file(candidate);
+            }
+        }
     }
+    Ok(())
 }

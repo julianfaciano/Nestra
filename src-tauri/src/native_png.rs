@@ -89,6 +89,8 @@ pub struct NativePiece {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativePlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub laser_outline: Option<LaserOutline>,
     pub name: String,
     pub width: u32,
     pub height: u32,
@@ -97,6 +99,43 @@ pub struct NativePlan {
     pub offset_y: f64,
     pub pieces: Vec<NativePiece>,
 }
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LaserOutline {
+    pub width: f64,
+    // Page-local pixels, already rotated and placed by the shared export plan.
+    pub contours: Vec<Vec<[f64; 2]>>,
+}
+impl NativePlan {
+    pub(crate) fn validate_outline(&self) -> Result<(), String> {
+        if let Some(outline) = &self.laser_outline {
+            if !outline.width.is_finite()
+                || outline.width <= 0.0
+                || outline.width > 100.0
+                || outline.contours.is_empty()
+            {
+                return Err("Contorno láser inválido.".into());
+            }
+            let half = outline.width / 2.0;
+            for contour in &outline.contours {
+                if contour.len() < 3
+                    || contour.iter().any(|p| {
+                        !p[0].is_finite()
+                            || !p[1].is_finite()
+                            || p[0] < half - 0.00001
+                            || p[1] < half - 0.00001
+                            || p[0] > self.width as f64 - half + 0.00001
+                            || p[1] > self.height as f64 - half + 0.00001
+                    })
+                {
+                    return Err("Contorno láser fuera del canvas.".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderDiagnostics {
@@ -127,6 +166,7 @@ pub struct RenderResult {
 }
 
 fn validate_plan(plan: &NativePlan, cache: &SourceCache) -> Result<(), String> {
+    plan.validate_outline()?;
     if !valid_filename(&plan.name)
         || plan.width == 0
         || plan.width > 17480
@@ -320,6 +360,36 @@ fn render_with_options(
             );
             canvas.restore();
             diagnostics.piece_draws += 1;
+        }
+        if let Some(outline) = &plan.laser_outline {
+            canvas.reset_matrix();
+            canvas.translate((0.0, -(y as f32)));
+            let mut line = Paint::default();
+            line.set_color(Color::BLACK);
+            line.set_anti_alias(true);
+            line.set_style(skia_safe::paint::Style::Stroke);
+            line.set_stroke_width(outline.width as f32);
+            line.set_stroke_join(skia_safe::paint::Join::Round);
+            line.set_stroke_cap(skia_safe::paint::Cap::Round);
+            for contour in &outline.contours {
+                let half = outline.width / 2.0;
+                let top = contour.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min) - half;
+                let bottom = contour
+                    .iter()
+                    .map(|p| p[1])
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    + half;
+                if bottom < y as f64 - 1.0 || top > (y + actual_rows) as f64 + 1.0 {
+                    continue;
+                }
+                let mut path = skia_safe::PathBuilder::new();
+                path.move_to((contour[0][0] as f32, contour[0][1] as f32));
+                for point in &contour[1..] {
+                    path.line_to((point[0] as f32, point[1] as f32));
+                }
+                path.close();
+                canvas.draw_path(&path.detach(), &line);
+            }
         }
         diagnostics.composition_ms += compose.elapsed().as_secs_f64() * 1000.0;
 
@@ -793,6 +863,7 @@ mod tests {
             decoded_bytes: 8,
         };
         let plan = NativePlan {
+            laser_outline: None,
             name: "polar_1_copia.png".into(),
             width: 2,
             height: 1,
@@ -816,6 +887,64 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read_rgb(&output.path).2, [255, 0, 0, 255, 255, 255]);
+    }
+    #[test]
+    fn laser_triangle_is_black_not_a_source_rectangle_and_is_strip_invariant() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = source_png(1, 1, &[255, 255, 255, 255]);
+        let cache = SourceCache {
+            images: HashMap::from([(0, decode_source(&png, 1, 1).unwrap())]),
+            decoded_bytes: 4,
+        };
+        let plan = NativePlan {
+            name: "laser.png".into(),
+            width: 64,
+            height: 64,
+            offset_x: 0.,
+            offset_y: 0.,
+            pieces: vec![NativePiece {
+                source: 0,
+                translate_x: 10.,
+                translate_y: 10.,
+                width: 40.,
+                height: 40.,
+                rotation: 0,
+            }],
+            laser_outline: Some(LaserOutline {
+                width: 2.,
+                contours: vec![vec![[10., 10.], [50., 10.], [10., 50.]]],
+            }),
+        };
+        let a = render_with_options(
+            &job(dir.path()),
+            &cache,
+            &plan,
+            &dir.path().join("a.png"),
+            |_| {},
+            7,
+            SrcRectConstraint::Strict,
+        )
+        .unwrap();
+        let b = render_with_options(
+            &job(dir.path()),
+            &cache,
+            &plan,
+            &dir.path().join("b.png"),
+            |_| {},
+            64,
+            SrcRectConstraint::Strict,
+        )
+        .unwrap();
+        let pixels = read_rgb(&a.path).2;
+        assert_eq!(pixels, read_rgb(&b.path).2);
+        let pixel = |x: usize, y: usize| &pixels[(y * 64 + x) * 3..(y * 64 + x) * 3 + 3];
+        assert_eq!(pixel(30, 10), &[0, 0, 0]);
+        assert_eq!(pixel(30, 29), &[0, 0, 0]);
+        assert_eq!(pixel(49, 40), &[255, 255, 255]);
+        assert_eq!(pixel(20, 20), &[255, 255, 255]);
+        let mut invalid = plan.clone();
+        invalid.laser_outline.as_mut().unwrap().contours[0][0][0] = 0.;
+        assert!(invalid.validate_outline().is_err());
     }
     #[test]
     fn cancel_after_a_strip_removes_partial_and_does_not_publish() {

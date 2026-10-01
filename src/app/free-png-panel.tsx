@@ -35,13 +35,7 @@ export function FreePngPanel({
           <span>02</span>
           <div>
             <h2>Piezas PNG</h2>
-            <p>Archivos libres a 72 PPI, requeridos o para completar espacios.</p>
           </div>
-        </div>
-        <div className="free-png-controls">
-          <button type="button" className="secondary-button" onClick={onImport}>
-            Agregar PNG
-          </button>
         </div>
       </div>
       {pieces.length > 0 && (
@@ -64,7 +58,8 @@ export function FreePngPanel({
                 </span>
                 <span className="free-png-size">
                   {centimeters.format(size.widthMm / 10)} ×{' '}
-                  {centimeters.format(size.heightMm / 10)} cm
+                  {centimeters.format(size.heightMm / 10)} cm ·{' '}
+                  {piece.sourceWidthPx} × {piece.sourceHeightPx} px
                 </span>
                 <input
                   type="number"
@@ -132,6 +127,11 @@ export function FreePngPanel({
           })}
         </ul>
       )}
+      <div className="production-add-action free-png-controls">
+        <button type="button" className="secondary-add-button" onClick={onImport}>
+          Agregar PNG
+        </button>
+      </div>
     </section>
   );
 }

@@ -90,7 +90,43 @@ function historicalCardTitle(job: HistoricalJob): string {
   return `(${normalized})`;
 }
 
-function HistoricalThumbnail({ file }: { readonly file: HistoricalFile }) {
+function HistoricalLightboxPreview({
+  file,
+  sourceFolderPath,
+  fallbackUrl,
+}: {
+  readonly file: HistoricalFile;
+  readonly sourceFolderPath: string;
+  readonly fallbackUrl: string;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const extension = file.type.toLowerCase();
+    if (!file.thumbnailKey || !['jpg', 'jpeg', 'png'].includes(extension) || file.path.startsWith('nestra:')) return;
+
+    let disposed = false;
+    let objectUrl: string | null = null;
+    void invoke<number[]>('load_historical_source_preview', {
+      root: sourceFolderPath,
+      path: file.path,
+      thumbnailKey: file.thumbnailKey,
+    }).then(bytes => {
+      if (disposed) return;
+      objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' }));
+      setUrl(objectUrl);
+    }).catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [file.path, file.thumbnailKey, file.type, sourceFolderPath]);
+
+  return <img src={url ?? fallbackUrl} alt={file.name} />;
+}
+
+function HistoricalThumbnail({ file, sourceFolderPath }: { readonly file: HistoricalFile; readonly sourceFolderPath: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
   const [url, setUrl] = useState<string | null>(null);
@@ -205,7 +241,7 @@ function HistoricalThumbnail({ file }: { readonly file: HistoricalFile }) {
             />
           }
         >
-          <img src={url} alt={file.name} />
+          <HistoricalLightboxPreview file={file} sourceFolderPath={sourceFolderPath} fallbackUrl={url} />
         </ImageLightbox>
       ) : failed ? (
         <span className="historical-preview-placeholder">
@@ -222,14 +258,14 @@ function HistoricalThumbnail({ file }: { readonly file: HistoricalFile }) {
   );
 }
 
-function HistoricalFilePreview({ file }: { readonly file: HistoricalFile }) {
+function HistoricalFilePreview({ file, sourceFolderPath }: { readonly file: HistoricalFile; readonly sourceFolderPath: string }) {
   return (
     <article className="historical-preview-item">
       <div className="historical-preview-name" title={file.name}>
         {file.name}
       </div>
 
-      <HistoricalThumbnail file={file} />
+      <HistoricalThumbnail file={file} sourceFolderPath={sourceFolderPath} />
 
       <div className="historical-preview-details">
         <span>{formatPhysicalSize(file)}</span>
@@ -433,7 +469,7 @@ function HistoricalJobCard({
       {hasFiles ? (
         <div className="historical-preview-scroll">
           {job.files.map((file, index) => (
-            <HistoricalFilePreview key={`${job.id}:${file.path}:${index}`} file={file} />
+            <HistoricalFilePreview key={`${job.id}:${file.path}:${index}`} file={file} sourceFolderPath={job.sourceFolderPath} />
           ))}
         </div>
       ) : (

@@ -1,3 +1,4 @@
+import { drawLaserOutlines } from '../export/laser-outline';
 import {
   PX_PER_MM,
   type ExportLayout,
@@ -11,8 +12,8 @@ import type {
   HistoricalFile,
 } from '../persistence/historical-jobs';
 
-const MAX_PREVIEW_PX = 900;
-const JPEG_QUALITY = 0.78;
+const MAX_PREVIEW_PX = 2400;
+const JPEG_QUALITY = 0.9;
 
 function loadImage(
   url: string,
@@ -170,6 +171,7 @@ async function renderLayoutPreview(
 
   signal.throwIfAborted();
 
+  drawLaserOutlines(context,layout,pixelScale);
   return canvasToJpeg(canvas);
 }
 

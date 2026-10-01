@@ -146,7 +146,7 @@ export function scanDesignCollection(
     assets,
     replacementAssets,
     missing,
-    duplicateSlots,
+    duplicateSlots: [...new Set(duplicateSlots)],
     ignoredFileNames,
   };
 }

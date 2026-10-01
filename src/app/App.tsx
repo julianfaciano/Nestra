@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTemplateLibrary } from './use-template-library';
 import { useDesignCollections } from './use-design-collections';
 import nestraLogo from '../assets/logo.png';
@@ -25,10 +25,14 @@ import {
 } from './batch-page';
 import { physicalSizeFromSourcePixels } from '../domain/source-image-size';
 import { DesignCollectionLibrary } from './design-collection-library';
+import { MoldsPage } from './molds-page';
 import type { DesignCollection } from './design-collection-state';
 import { HistoricalJobs } from './historical-jobs';
+import { completedActivityCleanup } from './activity-lifecycle';
+import { saveDesignCollections } from '../persistence/design-collections';
+import { mergeDesignCollectionList } from './design-collection-identity';
 
-type View = 'home' | 'templates' | 'batch' | 'jobs';
+type View = 'home' | 'templates' | 'batch' | 'jobs' | 'molds';
 const SIDEBAR_SESSION_KEY = 'nestra:sidebar-collapsed';
 
 function NavIcon({ view }: { readonly view: View }) {
@@ -37,6 +41,7 @@ function NavIcon({ view }: { readonly view: View }) {
     jobs: <><path d="M5 4.5h10v11H5z" /><path d="M7.5 8h5M7.5 11h5" /></>,
     templates: <><rect x="4" y="4" width="5" height="5" rx="1" /><rect x="11" y="4" width="5" height="5" rx="1" /><rect x="4" y="11" width="5" height="5" rx="1" /><rect x="11" y="11" width="5" height="5" rx="1" /></>,
     batch: <><path d="M4 6h12M4 10h12M4 14h8" /><circle cx="15" cy="14" r="1" /></>,
+    molds: <><path d="M4 4h12v12H4z" /><path d="M8 4v3h4V4M8 16v-3h4v3M4 8h3v4H4M16 8h-3v4h3" /></>,
   };
 
   return (
@@ -298,11 +303,13 @@ function GlobalSearch() {
 function CompactLibrary({
   collections,
   onImport,
+  onImportMany,
   onRemove,
   onUpdate,
 }: {
   collections: readonly DesignCollection[];
   onImport: (collection: DesignCollection) => void;
+  onImportMany: (collections: readonly DesignCollection[]) => void | Promise<void>;
   onRemove: (id: string) => void;
   onUpdate: (collection: DesignCollection) => void;
 }) {
@@ -320,6 +327,7 @@ function CompactLibrary({
       <DesignCollectionLibrary
         collections={collections}
         onImport={onImport}
+        onImportMany={onImportMany}
         onRemove={onRemove}
         onUpdate={onUpdate}
       />
@@ -352,6 +360,27 @@ export default function App() {
     status: 'idle',
     phase: 'Preparando exportación',
   });
+  const previousView = useRef(view);
+  const completedActivitySeenInBatch = useRef(false);
+
+  useLayoutEffect(() => {
+    const hasCompletedActivity = batchOptimization.status === 'completed' || batchExport.status === 'completed';
+    if (view === 'batch' && hasCompletedActivity) completedActivitySeenInBatch.current = true;
+
+    const cleanup = completedActivityCleanup(
+      previousView.current,
+      view,
+      completedActivitySeenInBatch.current,
+      batchOptimization.status,
+      batchExport.status,
+    );
+    if (cleanup.optimization) {
+      setBatchOptimization({ status: 'idle', progress: 0, phase: 'Preparando', resultAvailable: false });
+    }
+    if (cleanup.export) setBatchExport({ status: 'idle', phase: 'Preparando exportación' });
+    if (cleanup.optimization || cleanup.export) completedActivitySeenInBatch.current = false;
+    previousView.current = view;
+  }, [batchExport.status, batchOptimization.status, view]);
 
   const [showSplash, setShowSplash] = useState(true);
 
@@ -421,17 +450,13 @@ export default function App() {
     selectedTemplate?.simplificationTolerancePx ?? 1.5;
 
   function importDesignCollection(collection: DesignCollection): void {
-    setCollections((current) => {
-      /*
-       * Si volvemos a importar una carpeta con el mismo nombre,
-       * reemplazamos la colección anterior.
-       */
-      const withoutSameName = current.filter(
-        (item) => item.name.toLowerCase() !== collection.name.toLowerCase(),
-      );
+    setCollections(current => mergeDesignCollectionList(current, [collection]));
+  }
 
-      return [...withoutSameName, collection];
-    });
+  async function importDesignCollections(imported: readonly DesignCollection[]): Promise<void> {
+    const next = mergeDesignCollectionList(collections, imported);
+    await saveDesignCollections(next);
+    setCollections(next);
   }
 
   function removeDesignCollection(id: string): void {
@@ -625,6 +650,7 @@ export default function App() {
             ['home', 'Inicio'],
             ['jobs', 'Historial'],
             ['templates', 'Biblioteca'],
+            ['molds', 'Moldes'],
             ['batch', 'Producción'],
           ] as const).map(([nextView, label]) => (
             <button
@@ -708,6 +734,7 @@ export default function App() {
           <CompactLibrary
             collections={collections}
             onImport={importDesignCollection}
+            onImportMany={importDesignCollections}
             onRemove={removeDesignCollection}
             onUpdate={(updated) =>
               setCollections((current) =>
@@ -719,6 +746,8 @@ export default function App() {
           />
         ) : view === 'jobs' ? (
           <HistoricalJobs />
+        ) : view === 'molds' ? (
+          <MoldsPage />
         ) : view === 'home' ? (
           <section className="home-page">
             <div className="home-identity">
@@ -741,7 +770,8 @@ export default function App() {
               {([
                 ['batch', '01', 'Producción', 'Preparar un nuevo batch'],
                 ['templates', '02', 'Biblioteca', `${collections.length} diseños disponibles`],
-                ['jobs', '03', 'Historial', 'Revisar producciones anteriores'],
+                ['molds', '03', 'Moldes', 'Generar talles desde masters T8'],
+                ['jobs', '04', 'Historial', 'Revisar producciones anteriores'],
               ] as const).map(([nextView, number, label, detail]) => (
                 <button type="button" key={nextView} onClick={() => setView(nextView)}>
                   <span className="home-index-number">{number}</span>
@@ -798,6 +828,7 @@ export default function App() {
               <DesignCollectionLibrary
                 collections={collections}
                 onImport={importDesignCollection}
+                onImportMany={importDesignCollections}
                 onRemove={removeDesignCollection}
                 onUpdate={(updated) =>
                   setCollections((current) =>

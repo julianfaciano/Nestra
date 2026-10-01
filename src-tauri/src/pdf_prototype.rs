@@ -307,6 +307,7 @@ fn generate(
     {
         return Err("Página PDF inválida".into());
     }
+    plan.validate_outline()?;
     let page_pt = [plan.width as f64 * PT, plan.height as f64 * PT];
     let mut pdf = Pdf::new();
     pdf.set_version(1, 4);
@@ -374,6 +375,28 @@ fn generate(
             .x_object(Name(refs[&p.source].1.as_bytes()))
             .restore_state();
     }
+    if let Some(outline) = &plan.laser_outline {
+        content
+            .save_state()
+            .set_stroke_rgb(0., 0., 0.)
+            .set_line_width((outline.width * PT) as f32)
+            .set_line_join(pdf_writer::types::LineJoinStyle::RoundJoin)
+            .set_line_cap(pdf_writer::types::LineCapStyle::RoundCap);
+        for contour in &outline.contours {
+            content.move_to(
+                (contour[0][0] * PT) as f32,
+                ((plan.height as f64 - contour[0][1]) * PT) as f32,
+            );
+            for point in &contour[1..] {
+                content.line_to(
+                    (point[0] * PT) as f32,
+                    ((plan.height as f64 - point[1]) * PT) as f32,
+                );
+            }
+            content.close_path().stroke();
+        }
+        content.restore_state();
+    }
     pdf.stream(Ref::new(4), &content.finish());
     let bytes = pdf.finish();
     let mut temp = tempfile::NamedTempFile::new_in(destination.parent().unwrap()).map_err(err)?;
@@ -398,6 +421,7 @@ mod tests {
     use super::*;
     fn plan() -> NativePlan {
         NativePlan {
+            laser_outline: None,
             name: "test.png".into(),
             width: 300,
             height: 600,
@@ -485,5 +509,42 @@ mod tests {
         assert!(text.contains("/SMask"));
         assert!(generate(&p, &sources, &dest).is_err());
         assert_eq!(std::fs::read(dest).unwrap(), bytes);
+    }
+
+    #[test]
+    fn laser_contour_is_a_black_closed_vector_path_after_artwork() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.png");
+        let mut encoder = png::Encoder::new(File::create(&path).unwrap(), 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[255, 255, 255, 255]).unwrap();
+        writer.finish().unwrap();
+        let mut p = plan();
+        p.pieces = vec![piece(0)];
+        p.laser_outline = Some(crate::native_png::LaserOutline {
+            width: 3. * 300. / 25.4,
+            contours: vec![vec![[100., 100.], [140., 100.], [100., 120.]]],
+        });
+        let dest = dir.path().join("laser.pdf");
+        generate(&p, &BTreeMap::from([(0, path)]), &dest).unwrap();
+        let bytes = std::fs::read(dest).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("0 0 0 RG"));
+        let stroke_commands = &text[text.find("0 0 0 RG").unwrap()..];
+        let pdf_width: f64 = stroke_commands
+            .split(" w")
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .last()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((pdf_width - 3. * 72. / 25.4).abs() < 0.0001);
+        assert!(text.contains("1 j"));
+        assert!(text.contains("h\nS"));
+        assert!(text.find("/Im0 Do").unwrap() < text.find("0 0 0 RG").unwrap());
     }
 }

@@ -184,6 +184,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it('passes the complete laser plan to the productive native renderer', async () => {
+  const {laserBatch}=await import('../test/imprenta-2-fixture');
+  const actual=await vi.importActual<typeof import('./export-plan')>('./export-plan');
+  const laser=laserBatch();
+  const report=actual.preflightBatch(laser);
+  expect(report.errors).toEqual([]);
+  vi.mocked(preflightBatch).mockReturnValue(report);
+  await exportBatchPng(laser,new AbortController().signal,vi.fn());
+  const expected=nativePngPlan(report.layouts[0]!,new Map([['cut',0]]));
+  expect(expected.laserOutline!.contours).toHaveLength(2);
+  expect(invoke).toHaveBeenCalledWith('render_native_png',expect.objectContaining({plan:expected}));
+});
+
 describe(
   'native PNG export orchestration',
   () => {

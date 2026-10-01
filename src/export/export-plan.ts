@@ -1,5 +1,7 @@
 import { pieceDefinitionLabel, type BatchPieceDefinition } from '../domain/production-batch';
-import type { CanvasProfile } from '../domain/canvas-profile';
+import { canvasProfileHeightLimit, nominalSilhouetteClearanceMm, outlineExtentMm, LASER_CUT_OUTLINE_COLOR, LASER_CUT_OUTLINE_WIDTH_MM, PRODUCTIVE_EXPORT_PPI, type CanvasProfile } from '../domain/canvas-profile';
+import { validateCanvasProfile } from '../domain/canvas-profile-validation';
+import { minimumContourDistance } from '../geometry/polygon-clearance';
 import { expandPieceDefinitions } from '../domain/piece-instance';
 import { getAllowedRotationsForPiece } from '../domain/piece-rotation';
 import type { Polygon } from '../geometry/polygon';
@@ -11,7 +13,7 @@ import { artworkBounds } from '../geometry/artwork-bounds';
 import { extraPieceId, type ExtraPieceIdentity } from '../geometry/filler-types';
 import type { AlphaPixelBounds } from '../geometry/alpha-polygon';
 
-export const EXPORT_PPI = 300;
+export const EXPORT_PPI = PRODUCTIVE_EXPORT_PPI;
 export const PX_PER_MM = EXPORT_PPI / 25.4;
 export const PRODUCTIVE_CANVAS_WIDTH_MM = 1480;
 export interface FabricBatchResult {
@@ -21,6 +23,7 @@ export interface FabricBatchResult {
   readonly elapsedMs: number;
 }
 export interface PreparedBatch {
+  readonly cutComponents?: ReadonlyMap<string, readonly Polygon[]>;
   readonly definitions: readonly BatchPieceDefinition[];
   readonly polygons: ReadonlyMap<string, Polygon>;
   readonly collisionPolygons?: ReadonlyMap<string, Polygon>;
@@ -40,6 +43,7 @@ export interface SourceCrop {
   readonly heightMm: number;
 }
 export interface ArtworkPlacement {
+  readonly cutComponents?: readonly Polygon[];
   readonly extra?: ExtraPieceIdentity;
   readonly definition: BatchPieceDefinition;
   readonly placement: PolygonPlacement;
@@ -48,6 +52,7 @@ export interface ArtworkPlacement {
   readonly sourceCrop?: SourceCrop;
 }
 export interface ExportLayout {
+  readonly laserOutline?: { readonly widthMm: number; readonly color: string };
   readonly name: string;
   readonly fabric: string;
   readonly widthMm: number;
@@ -228,6 +233,7 @@ function exportLayoutSignature(
     .sort();
 
   return JSON.stringify({
+    ...(layout.laserOutline ? {laserOutline:layout.laserOutline,cutContours:layout.pieces.map(p=>p.cutComponents)} : {}),
     fabric: layout.fabric,
     widthMm: stableNumber(layout.widthMm),
     heightMm: stableNumber(layout.heightMm),
@@ -402,7 +408,8 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
   const { profile } = batch;
   if (!Number.isFinite(profile.maxWidth) || profile.maxWidth <= 0 || profile.maxWidth > 1480 ||
       !Number.isFinite(profile.maxHeight) || profile.maxHeight <= 0 ||
-      profile.maxHeight > (profile.kind === 'calandra' ? 5000 : 1000)) errors.push('Perfil físico inválido.');
+      profile.maxHeight > canvasProfileHeightLimit(profile)) errors.push('Perfil físico inválido.');
+  if (validateCanvasProfile(profile).length) errors.push('Configuración del perfil inválida.');
   if (batch.definitions.length === 0) errors.push('El batch está vacío.');
   const ids = new Set<string>();
   const pairing = new Map<string, { front: number; back: number }>();
@@ -452,6 +459,8 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
       const arts: ArtworkPlacement[] = [];
       const artworkBoundsRecords: PlacedArtworkBounds[] = [];
       const actualPolygons: (readonly Polygon[])[] = [];
+      const cutRecords: { components: readonly Polygon[]; definition: BatchPieceDefinition }[] = [];
+      const extent = outlineExtentMm(profile);
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const piece of layout.pieces) {
         let d: BatchPieceDefinition | undefined;
@@ -525,6 +534,24 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
           errors.push(error instanceof Error ? error.message : String(error));
           continue;
         }
+        const cutSource = batch.cutComponents?.get(d.id);
+        if (cutSource && (!cutSource.length || cutSource.some(p => p.length < 3 || p.some(v => !Number.isFinite(v.x) || !Number.isFinite(v.y))))) {
+          errors.push(`Contorno de corte inválido: ${pieceIdentity(d)}.`); continue;
+        }
+        const cutComponents = cutSource ? cutSource.map(p => p.map(v => {
+          const r = rotatePoint(v,piece.placement.rotation);
+          return {x:r.x+tx,y:r.y+ty};
+        })) : piece.collisionComponents ?? [transformedCollision];
+        cutRecords.push({components:cutComponents,definition:d});
+        if (extent) {
+          const cb = getPolygonBounds(cutComponents.flat());
+          if (cb.minX < extent-BOUNDS_EPSILON_MM || cb.minY < extent-BOUNDS_EPSILON_MM ||
+              cb.maxX > profile.maxWidth-extent+BOUNDS_EPSILON_MM || cb.maxY > profile.maxHeight-extent+BOUNDS_EPSILON_MM) {
+            errors.push(`Canvas ${layout.index+1} · ${pieceIdentity(d)}: contorno láser fuera del perfil físico.`);
+          }
+          minX=Math.min(minX,cb.minX-extent); minY=Math.min(minY,cb.minY-extent);
+          maxX=Math.max(maxX,cb.maxX+extent); maxY=Math.max(maxY,cb.maxY+extent);
+        }
         const bounds = placedSourceCropBounds(
           sourceCrop,
           piece.placement,
@@ -536,7 +563,7 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
         }
         minX = Math.min(minX, bounds.minX); minY = Math.min(minY, bounds.minY);
         maxX = Math.max(maxX, bounds.maxX); maxY = Math.max(maxY, bounds.maxY);
-        const art: ArtworkPlacement = { definition:d, placement:piece.placement, translateX:tx, translateY:ty, sourceCrop, ...(piece.extra ? { extra: piece.extra } : {}) };
+        const art: ArtworkPlacement = { definition:d, placement:piece.placement, translateX:tx, translateY:ty, sourceCrop, ...(profile.laserCutOutline ? {cutComponents} : {}), ...(piece.extra ? { extra: piece.extra } : {}) };
         arts.push(art);
         artworkBoundsRecords.push({
           pieceId: piece.pieceId,
@@ -547,6 +574,17 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
       }
       for (let a = 0; a < actualPolygons.length; a++) for (let b = a+1; b < actualPolygons.length; b++) {
         if (componentsOverlap(actualPolygons[a]!, actualPolygons[b]!)) errors.push(result.fabric + ': colisión en canvas ' + (layout.index + 1));
+      }
+      const nominalClearance = nominalSilhouetteClearanceMm(profile);
+      if (nominalClearance) {
+        for (let a=0;a<cutRecords.length;a++) for (let b=a+1;b<cutRecords.length;b++) {
+          const first=cutRecords[a]!, second=cutRecords[b]!;
+          const distance=minimumContourDistance(first.components,second.components);
+          if (distance < nominalClearance-1e-9) {
+            const visibleGap = distance - (profile.laserCutOutline ? profile.laserCutOutlineWidthMm ?? LASER_CUT_OUTLINE_WIDTH_MM : 0);
+            errors.push(`Canvas ${layout.index+1}: ${pieceIdentity(first.definition)} deja ${visibleGap.toLocaleString('es-AR',{minimumFractionDigits:3,maximumFractionDigits:3})} mm libres entre contornos negros de ${pieceIdentity(second.definition)}. ${profile.name} requiere ${profile.minimumVisibleGapMm?.toLocaleString('es-AR',{minimumFractionDigits:1}) ?? nominalClearance.toLocaleString('es-AR',{minimumFractionDigits:1})} mm visibles (separación nominal ${nominalClearance.toLocaleString('es-AR',{minimumFractionDigits:1})} mm).`);
+          }
+        }
       }
       // Keep the productive width fixed. The crop uses the same printable-alpha
       // threshold as nesting and still envelopes every island above that threshold.
@@ -581,11 +619,18 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
       const base = fabricSlug(result.fabric);
       const index = names.get(base) ?? 0; names.set(base, index+1);
       const widthPx = Math.max(1, Math.round(widthMm * PX_PER_MM));
-      const heightPx = Math.max(1, Math.round(heightMm * PX_PER_MM));
+      const heightPx = Math.max(1, profile.laserCutOutline ? Math.ceil(heightMm * PX_PER_MM - 1e-9) : Math.round(heightMm * PX_PER_MM));
       if (widthPx > Math.floor(PRODUCTIVE_CANVAS_WIDTH_MM * PX_PER_MM) || heightPx > Math.floor(profile.maxHeight * PX_PER_MM)) {
         errors.push('El redondeo raster excede el perfil; dejá al menos 0,1 mm de margen.'); continue;
       }
-      layouts.push({name: base + '_1_copia' + letterSuffix(index) + '.png', fabric:result.fabric, widthMm,heightMm,widthPx,heightPx,offsetX,offsetY:minY,pieces:arts});
+      if (profile.laserCutOutline && cutRecords.some(record => {
+        const cb = getPolygonBounds(record.components.flat());
+        return cb.minX-extent < offsetX-BOUNDS_EPSILON_MM || cb.maxX+extent > offsetX+widthPx/PX_PER_MM+BOUNDS_EPSILON_MM;
+      })) {
+        errors.push(`Canvas ${layout.index+1}: el contorno láser excede el ancho raster físico.`);
+        continue;
+      }
+      layouts.push({...(profile.laserCutOutline ? {laserOutline:{widthMm:extent*2,color:LASER_CUT_OUTLINE_COLOR}} : {}),name: base + '_1_copia' + letterSuffix(index) + '.png', fabric:result.fabric, widthMm,heightMm,widthPx,heightPx,offsetX,offsetY:minY,pieces:arts});
     }
   }
   for (const id of expected.keys()) {

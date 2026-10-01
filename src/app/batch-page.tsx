@@ -6,7 +6,9 @@ import {
 } from '../geometry/nesting-profiler';
 import {
   DEFAULT_IMPRENTA_PROFILE,
-  DEFAULT_CALANDRA_PROFILE,
+  CANVAS_PROFILES,
+  nestingCanvasForProfile,
+  type CanvasProfileKind,
 } from '../domain/canvas-profile';
 import {
   nestInWorker,
@@ -29,6 +31,8 @@ import { groupPiecesByFabric } from '../domain/fabric-grouping';
 import { getPieceSideLabel, PIECE_SIDES } from '../domain/piece-side';
 import { getAllowedRotationsForPiece } from '../domain/piece-rotation';
 import { DEFAULT_PRODUCTION_FABRIC } from '../domain/fabric';
+import { batchPieceLimitError } from '../domain/batch-piece-limit';
+import { parseOrderText, quantitiesFromOrder } from '../domain/order-import';
 import {
   toggleFill,
   fillersForInstances,
@@ -68,6 +72,7 @@ import {
   findCollectionAsset,
   findCollectionReplacementAssets,
   findCollectionPreviewAsset,
+  isCollectionComplete,
   type DesignCollection,
 } from './design-collection-state';
 import { AssetPreview } from './design-collection-library';
@@ -88,6 +93,11 @@ const DEFAULT_ALPHA_THRESHOLD = 16;
 const FAST_SIMPLIFICATION_PX = 3;
 const FINE_SIMPLIFICATION_PX = 1.5;
 const DEFAULT_SCAN_STEP_MM = 22.5;
+export function getBatchPieceLimitError(
+  pieces: readonly Pick<ProductionPieceDraft, 'kind' | 'quantity'>[],
+): string | null {
+  return batchPieceLimitError(pieces.reduce((count, piece) => count + piece.quantity, 0));
+}
 
 function formatMeters(millimeters: number): string {
   return new Intl.NumberFormat('es-AR', {
@@ -282,6 +292,7 @@ function createEmptyDraft(): BatchPieceDraft {
 }
 
 interface PolygonPair {
+  readonly cutComponents?: readonly Polygon[];
   readonly collisionComponents?: readonly Polygon[];
   readonly fastPolygon: Polygon;
   readonly finePolygon: Polygon;
@@ -315,6 +326,7 @@ function contourPixelBounds(polygon: Polygon): AlphaPixelBounds {
 async function polygonsFromDefinition(
   definition: BatchPieceDefinition,
   file: File,
+  includeCutContours = false,
 ): Promise<PolygonPair> {
   let cacheKey: string | undefined;
 
@@ -331,7 +343,7 @@ async function polygonsFromDefinition(
 
     const cached = cacheKey ? await loadCachedContourPair(cacheKey) : undefined;
 
-    if (cached) {
+    if (cached && !includeCutContours) {
       return cached;
     }
   } catch {
@@ -398,6 +410,7 @@ async function polygonsFromDefinition(
         fastPolygon: envelope,
         finePolygon: envelope,
         collisionComponents,
+        ...(includeCutContours ? {cutComponents: collisionComponents} : {}),
         sourceAlphaBounds,
         sourcePlacementBounds: sourceAlphaBounds,
       };
@@ -448,7 +461,10 @@ async function polygonsFromDefinition(
     );
     const sourcePlacementBounds = replacementEnvelope ? sourceAlphaBounds : contourPixelBounds(fineContour.rawPolygon);
 
+    const cutComponents = includeCutContours ? extractAlphaComponents(imageData, definition.alphaThreshold).map(p =>
+      polygonPixelsToMillimeters(p,image.width,image.height,definition.physicalWidthMm,definition.physicalHeightMm)) : undefined;
     const result: PolygonPair = {
+      ...(cutComponents ? {cutComponents} : {}),
       fastPolygon,
       finePolygon,
       sourceAlphaBounds,
@@ -602,11 +618,14 @@ export function BatchPage({
   onOptimizationChange,
   onExportChange,
 }: BatchPageProps) {
+  const garmentCollections = useMemo(() => collections.filter(isCollectionComplete), [collections]);
   const [pieces, setPieces] = useState<BatchPieceDraft[]>([createEmptyDraft()]);
-  const [batchFabric, setBatchFabric] = useState('set');
+  const [batchFabric, setBatchFabric] = useState('');
+  const [orderImportOpen, setOrderImportOpen] = useState(false);
+  const [orderText, setOrderText] = useState('');
+  const [orderShowPreview, setOrderShowPreview] = useState(false);
   const [freePngs, setFreePngs] = useState<FreePngDraft[]>([]);
   const [replacementPieces, setReplacementPieces] = useState<ReplacementPieceDraft[]>([]);
-  const [showReplacementForm, setShowReplacementForm] = useState(false);
   const [replacementCollectionId, setReplacementCollectionId] = useState(collections[0]?.id ?? '');
   const [replacementSize, setReplacementSize] = useState<GarmentSize>('T8');
   const [replacementSide, setReplacementSide] = useState<(typeof PIECE_SIDES)[number]>('front');
@@ -615,11 +634,7 @@ export function BatchPage({
   const [replacementFabric, setReplacementFabric] = useState('set');
   const [replacementFeedback, setReplacementFeedback] = useState<ReplacementFeedback | null>(null);
   const [isAddingReplacement, setIsAddingReplacement] = useState(false);
-  const [replacementFocusTarget, setReplacementFocusTarget] = useState<'design' | 'quantity' | 'trigger' | null>(null);
   const addingReplacementRef = useRef(false);
-  const replacementTriggerRef = useRef<HTMLButtonElement>(null);
-  const replacementDesignRef = useRef<HTMLSelectElement>(null);
-  const replacementQuantityRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const selectedCollection = collections.find(collection => collection.id === replacementCollectionId) ?? collections[0];
     if (!selectedCollection) {
@@ -644,15 +659,6 @@ export function BatchPage({
   const replacementAssetOptions = replacementCollection
     ? findCollectionReplacementAssets(replacementCollection, replacementSize, replacementSide)
     : [];
-  useEffect(() => {
-    if (replacementFocusTarget === 'design' && showReplacementForm) replacementDesignRef.current?.focus();
-    if (replacementFocusTarget === 'quantity' && showReplacementForm) {
-      replacementQuantityRef.current?.focus();
-      replacementQuantityRef.current?.select();
-    }
-    if (replacementFocusTarget === 'trigger' && !showReplacementForm) replacementTriggerRef.current?.focus();
-    if (replacementFocusTarget) setReplacementFocusTarget(null);
-  }, [replacementFocusTarget, showReplacementForm]);
   const fillActivationCounter = useRef(0);
   const [isImportingPng, setIsImportingPng] = useState(false);
   const mounted = useRef(true);
@@ -676,7 +682,7 @@ export function BatchPage({
   const [usedTemplates, setUsedTemplates] = useState<
     readonly SizeTemplateDraft[] | null
   >(null);
-  const [mode, setMode] = useState<'imprenta' | 'calandra'>('imprenta');
+  const [mode, setMode] = useState<CanvasProfileKind>('imprenta');
   const [isExporting, setIsExporting] = useState(false);
   const [exportSucceeded, setExportSucceeded] = useState(false);
   const [exportActivity, setExportActivity] =
@@ -714,7 +720,7 @@ export function BatchPage({
     return nextReport;
   }, [prepared, templates, usedTemplates]);
   const profile =
-    mode === 'imprenta' ? DEFAULT_IMPRENTA_PROFILE : DEFAULT_CALANDRA_PROFILE;
+    CANVAS_PROFILES.find(p => p.kind === mode) ?? DEFAULT_IMPRENTA_PROFILE;
   const hasOptimizationResult =
     prepared !== null && report !== null && results.length > 0;
   const resultNeedsRefresh =
@@ -727,7 +733,7 @@ export function BatchPage({
     results.length > 0;
   const selectedGarmentCount = useMemo(
     () =>
-      collections.reduce(
+      garmentCollections.reduce(
         (total, collection) =>
           total +
           GARMENT_SIZES.reduce(
@@ -737,8 +743,13 @@ export function BatchPage({
           ),
         0,
       ),
-    [collectionQuantities, collections],
+    [collectionQuantities, garmentCollections],
   );
+  const orderPreview = useMemo(() => parseOrderText(
+    orderText,
+    garmentCollections.map(({ id, name }) => ({ id, name })),
+    [...replacementPieces, ...freePngs].reduce((total, piece) => total + piece.quantity, 0),
+  ), [garmentCollections, freePngs, orderText, replacementPieces]);
   useEffect(() => {
     const urls = ownedUrls.current;
     mounted.current = true;
@@ -903,13 +914,15 @@ export function BatchPage({
     const collection = collections.find(item => item.id === replacementCollectionId);
     const asset = collection && findCollectionReplacementAssets(collection, replacementSize, replacementSide)
       .find(candidate => candidate.relativePath === replacementAssetPath);
-    const fabric = replacementFabric.trim();
+    const fabric = (replacementPieces.length === 0 && batchFabric.trim()
+      ? batchFabric.trim()
+      : replacementFabric.trim()) || DEFAULT_PRODUCTION_FABRIC;
     if (!collection || !asset) {
       setReplacementFeedback({ kind: 'error', message: 'Elegí un diseño, talle y lado disponible en Biblioteca.' });
       return;
     }
-    if (!validFreePngQuantity(replacementQuantity) || !fabric) {
-      setReplacementFeedback({ kind: 'error', message: 'Ingresá una tela y una cantidad entera mayor que cero.' });
+    if (!validFreePngQuantity(replacementQuantity)) {
+      setReplacementFeedback({ kind: 'error', message: 'Ingresá una cantidad entera mayor que cero.' });
       return;
     }
 
@@ -945,7 +958,6 @@ export function BatchPage({
         setReplacementFabric(fabric);
         setReplacementQuantity(1);
         setReplacementFeedback({ kind: 'success', message: 'Reposición agregada. Podés cargar otra.' });
-        setReplacementFocusTarget('quantity');
         setStatus(null);
       } finally {
         image.close();
@@ -1137,8 +1149,9 @@ export function BatchPage({
       }
     }
 
-    if (allInputPieces.reduce((n, p) => n + p.quantity, 0) > 1000) {
-      const error = 'Máximo 1000 piezas por batch en esta versión.';
+    const batchPieceLimitError = getBatchPieceLimitError(allInputPieces);
+    if (batchPieceLimitError) {
+      const error = batchPieceLimitError;
       setStatus(error);
       setOptimization({
         status: 'error',
@@ -1224,6 +1237,7 @@ export function BatchPage({
         AlphaPixelBounds
       >();
 
+      const cutComponentsByDefinitionId = new Map<string, readonly Polygon[]>();
       const sourceFileByDefinitionId = new Map<string, File>();
 
       for (const piece of allInputPieces) {
@@ -1244,14 +1258,16 @@ export function BatchPage({
         }
 
         const {
+          cutComponents,
           fastPolygon,
           finePolygon,
           collisionComponents,
           sourceAlphaBounds,
           sourcePlacementBounds,
         } =
-          await polygonsFromDefinition(definition, file);
+          await polygonsFromDefinition(definition, file, Boolean(profile.laserCutOutline));
 
+        if (cutComponents) cutComponentsByDefinitionId.set(definition.id, cutComponents);
         polygonByDefinitionId.set(definition.id, fastPolygon);
 
         finePolygonByDefinitionId.set(definition.id, finePolygon);
@@ -1318,6 +1334,16 @@ export function BatchPage({
                     },
                   }
                 : {}),
+              ...(cutComponentsByDefinitionId.has(instance.definitionId) ? {
+                cutComponents: cutComponentsByDefinitionId.get(instance.definitionId)!,
+                cutAnchor: (() => {
+                  const b = sourcePlacementBoundsByDefinitionId.get(instance.definitionId)!;
+                  const sx=instance.definition.physicalWidthMm/instance.definition.sourceWidthPx;
+                  const sy=instance.definition.physicalHeightMm/instance.definition.sourceHeightPx;
+                  return [{x:b.x*sx,y:b.y*sy},{x:(b.x+b.width)*sx,y:b.y*sy},
+                    {x:(b.x+b.width)*sx,y:(b.y+b.height)*sy},{x:b.x*sx,y:(b.y+b.height)*sy}];
+                })(),
+              } : {}),
               id: instance.id,
               kind: instance.definition.kind === 'free-png' ? 'free-png' : 'garment',
               polygon,
@@ -1373,10 +1399,7 @@ export function BatchPage({
             pieces: nestingPieces,
             diagnosticPhaseTiming: true,
             ...(fillers.length ? { fillers } : {}),
-            canvas: {
-              width: profile.maxWidth,
-              height: profile.maxHeight,
-            },
+            canvas: nestingCanvasForProfile(profile),
             scanStepMm: DEFAULT_SCAN_STEP_MM,
           },
           controller.signal,
@@ -1438,6 +1461,7 @@ export function BatchPage({
         definitions,
         polygons: polygonByDefinitionId,
         collisionPolygons: finePolygonByDefinitionId,
+        cutComponents: cutComponentsByDefinitionId,
         sourceAlphaBounds: sourceAlphaBoundsByDefinitionId,
         sourcePlacementBounds: sourcePlacementBoundsByDefinitionId,
         results: nextResults,
@@ -1510,7 +1534,7 @@ export function BatchPage({
     setExportDiagnostics(null);
     const fabric = batchFabric.trim();
 
-    if (!fabric) {
+    if (selectedGarmentCount > 0 && !fabric) {
       setStatus('Elegí un tipo de tela para el batch.');
       return;
     }
@@ -1528,7 +1552,7 @@ export function BatchPage({
     const generatedPieces: BatchPieceDraft[] = [];
 
     try {
-      for (const collection of collections) {
+      for (const collection of garmentCollections) {
         for (const size of GARMENT_SIZES) {
             const quantity = collectionQuantities[collection.id]?.[size] ?? 0;
 
@@ -1710,7 +1734,6 @@ export function BatchPage({
 
         exportSuccessTimer.current = window.setTimeout(() => {
           setExportSucceeded(false);
-          setExportActivity(IDLE_EXPORT);
 
           exportSuccessTimer.current = null;
         }, 10_000);
@@ -1739,6 +1762,14 @@ export function BatchPage({
     }
   }
 
+  function applyOrderImport(): void {
+    if (!orderPreview.confirmable) return;
+    setCollectionQuantities(quantitiesFromOrder(orderPreview, garmentCollections));
+    markOptimizationStale();
+    setOrderImportOpen(false);
+    setOrderShowPreview(false);
+  }
+
   return (
     <section className="batch-page">
       <fieldset
@@ -1750,63 +1781,6 @@ export function BatchPage({
             <p className="page-kicker">NUEVO BATCH</p>
             <h1>Producción</h1>
             <p>Elegí diseños, definí cantidades y prepará el layout final.</p>
-          </div>
-          <div className="production-context">
-            <label className="production-fabric-field">
-              <span>TELA DEL BATCH</span>
-              <input
-                type="text"
-                aria-label="Tipo de tela para todo el batch"
-                value={batchFabric}
-                placeholder="set"
-                spellCheck={false}
-                autoCorrect="off"
-                autoCapitalize="none"
-                onChange={(event) => {
-                  setBatchFabric(event.target.value);
-                  markOptimizationStale();
-                }}
-              />
-            </label>
-            <div className="segmented-toggle" aria-label="Perfil de salida">
-              {(['imprenta', 'calandra'] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  className={mode === option ? 'selected' : ''}
-                  onClick={() => {
-                    if (option === mode) return;
-                    operation.current?.abort();
-                    if (exportSuccessTimer.current !== null) {
-                      window.clearTimeout(exportSuccessTimer.current);
-                    }
-                    setMode(option);
-                    markOptimizationStale();
-                    preflightElapsedMs.current = 0;
-                  }}
-                >
-                  {option === 'imprenta' ? 'Imprenta' : 'Calandra'}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="production-command">
-            <p className="batch-selection-summary">
-              {selectedGarmentCount} prendas seleccionadas · cada prenda genera
-              automáticamente un frente y un dorso.
-              {replacementPieces.length > 0
-                ? ` · ${replacementPieces.reduce((total, piece) => total + piece.quantity, 0)} piezas de reposición`
-                : ''}
-            </p>
-            <button
-              className="batch-primary-button production-primary-action"
-              type="button"
-              disabled={isOptimizing}
-              onClick={() => void optimizeCollections()}
-            >
-              {isOptimizing ? 'OPTIMIZANDO…' : 'Optimizar batch'}
-              <span aria-hidden="true">→</span>
-            </button>
           </div>
         </header>
 
@@ -1820,29 +1794,7 @@ export function BatchPage({
 
         <section className="collection-batch-browser">
           <div className="collection-browser-heading">
-            <button
-              ref={replacementTriggerRef}
-              type="button"
-              className={`secondary-button${showReplacementForm ? ' is-active' : ''}`}
-              disabled={collections.length === 0 || isOptimizing || isAddingReplacement}
-              aria-expanded={showReplacementForm}
-              aria-controls="replacement-piece-form"
-              onClick={() => {
-                if (showReplacementForm) {
-                  setShowReplacementForm(false);
-                  setReplacementFeedback(null);
-                  setReplacementFocusTarget('trigger');
-                } else {
-                  setReplacementFabric(current => replacementPieces.length > 0 ? current : batchFabric.trim());
-                  setReplacementFeedback(null);
-                  setShowReplacementForm(true);
-                  setReplacementFocusTarget('design');
-                }
-              }}
-            >
-              {showReplacementForm ? 'Cancelar' : 'Agregar reposición'}
-            </button>
-            {collections.length > 0 ? (
+            {garmentCollections.length > 0 ? (
               <button
                 type="button"
                 className="collection-quantities-reset-button"
@@ -1855,86 +1807,7 @@ export function BatchPage({
             ) : null}
           </div>
 
-          {showReplacementForm ? (
-            <form
-              id="replacement-piece-form"
-              className="replacement-piece-form"
-              aria-label="Agregar reposición"
-              noValidate
-              onSubmit={event => { event.preventDefault(); void addReplacementPiece(); }}
-              onKeyDown={event => {
-                if (event.key === 'Escape' && !isAddingReplacement) {
-                  event.preventDefault();
-                  setShowReplacementForm(false);
-                  setReplacementFeedback(null);
-                  setReplacementFocusTarget('trigger');
-                }
-              }}
-            >
-              <fieldset disabled={isAddingReplacement}>
-                <label>Diseño
-                  <select
-                    ref={replacementDesignRef}
-                    value={replacementCollectionId}
-                    onChange={event => {
-                      const collectionId = event.target.value;
-                      setReplacementCollectionId(collectionId);
-                      setReplacementFeedback(null);
-                    }}
-                  >
-                    {[...collections].sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base', numeric: true })).map(collection => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
-                  </select>
-                </label>
-                <label>Talle
-                  <select value={replacementSize} onChange={event => {
-                    const size = event.target.value as GarmentSize;
-                    setReplacementSize(size);
-                    setReplacementFeedback(null);
-                  }}>
-                    {GARMENT_SIZES.map(size => <option key={size} value={size} disabled={!replacementCollection || !PIECE_SIDES.some(side => findCollectionReplacementAssets(replacementCollection, size, side).length)}>{size}</option>)}
-                  </select>
-                </label>
-                <label>Lado
-                  <select value={replacementSide} onChange={event => { setReplacementSide(event.target.value as (typeof PIECE_SIDES)[number]); setReplacementFeedback(null); }}>
-                    {PIECE_SIDES.map(side => {
-                      const available = Boolean(replacementCollection && findCollectionReplacementAssets(replacementCollection, replacementSize, side).length);
-                      return <option key={side} value={side} disabled={!available}>{getPieceSideLabel(side)}</option>;
-                    })}
-                  </select>
-                </label>
-                <label className="replacement-piece-form__asset">Archivo de Biblioteca
-                  <select value={replacementAssetPath} onChange={event => { setReplacementAssetPath(event.target.value); setReplacementFeedback(null); }}>
-                    {replacementAssetOptions.map(asset => <option key={asset.relativePath} value={asset.relativePath}>{asset.relativePath}</option>)}
-                  </select>
-                </label>
-                <label>Cantidad
-                  <input
-                    ref={replacementQuantityRef}
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={replacementQuantity}
-                    onChange={event => { setReplacementQuantity(Number(event.target.value) || 0); setReplacementFeedback(null); }}
-                  />
-                </label>
-                <label>Tela
-                  <input type="text" value={replacementFabric} onChange={event => { setReplacementFabric(event.target.value); setReplacementFeedback(null); }} />
-                </label>
-                <div className="replacement-piece-form__actions">
-                  <button type="submit" className="batch-primary-button" disabled={isAddingReplacement}>
-                    {isAddingReplacement ? 'Agregando…' : 'Agregar pieza'}
-                  </button>
-                </div>
-              </fieldset>
-              {replacementFeedback ? (
-                <p className={`replacement-feedback is-${replacementFeedback.kind}`} role={replacementFeedback.kind === 'error' ? 'alert' : 'status'}>
-                  {replacementFeedback.message}
-                </p>
-              ) : null}
-            </form>
-          ) : null}
-
-          {collections.length === 0 && freePngs.length === 0 && replacementPieces.length === 0 ? (
+          {garmentCollections.length === 0 && freePngs.length === 0 && replacementPieces.length === 0 ? (
             <div className="empty-state production-empty">
               <span className="status-badge">PENDIENTE</span>
               <h2>No hay piezas en el batch</h2>
@@ -1942,7 +1815,7 @@ export function BatchPage({
             </div>
           ) : (
             <div className="collection-batch-grid">
-              {[...collections]
+              {[...garmentCollections]
                 .sort((a, b) =>
                   a.name.localeCompare(b.name, 'es', {
                     sensitivity: 'base',
@@ -2070,6 +1943,17 @@ export function BatchPage({
                 })}
             </div>
           )}
+          {collections.length ? (
+            <div className="production-order-import-slot">
+              <button
+                type="button"
+                className="secondary-button production-order-import"
+                onClick={() => { setOrderText(''); setOrderShowPreview(false); setOrderImportOpen(true); }}
+              >
+                Importar pedido
+              </button>
+            </div>
+          ) : null}
         </section>
 
         {replacementPieces.length > 0 ? (
@@ -2089,6 +1973,80 @@ export function BatchPage({
             </ul>
           </section>
         ) : null}
+
+        <section className="replacement-piece-entry" aria-labelledby="replacement-piece-entry-title">
+          <div className="batch-section-heading replacement-piece-entry-heading">
+            <div>
+              <h2 id="replacement-piece-entry-title">Agregar dorso/frente</h2>
+              <p>Elegí un diseño y un archivo personalizado de Biblioteca.</p>
+            </div>
+          </div>
+          <form
+            id="replacement-piece-form"
+            className="replacement-piece-form"
+            aria-label="Agregar reposición"
+            noValidate
+            onSubmit={event => { event.preventDefault(); void addReplacementPiece(); }}
+          >
+            <fieldset disabled={isAddingReplacement || isOptimizing || collections.length === 0}>
+              <label>Diseño
+                <select
+                  value={replacementCollectionId}
+                  onChange={event => {
+                    setReplacementCollectionId(event.target.value);
+                    setReplacementFeedback(null);
+                  }}
+                >
+                  {[...collections].sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base', numeric: true })).map(collection => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
+                </select>
+              </label>
+              <label>Talle
+                <select value={replacementSize} onChange={event => {
+                  const size = event.target.value as GarmentSize;
+                  setReplacementSize(size);
+                  setReplacementFeedback(null);
+                }}>
+                  {GARMENT_SIZES.map(size => <option key={size} value={size} disabled={!replacementCollection || !PIECE_SIDES.some(side => findCollectionReplacementAssets(replacementCollection, size, side).length)}>{size}</option>)}
+                </select>
+              </label>
+              <label>Lado
+                <select value={replacementSide} onChange={event => { setReplacementSide(event.target.value as (typeof PIECE_SIDES)[number]); setReplacementFeedback(null); }}>
+                  {PIECE_SIDES.map(side => {
+                    const available = Boolean(replacementCollection && findCollectionReplacementAssets(replacementCollection, replacementSize, side).length);
+                    return <option key={side} value={side} disabled={!available}>{getPieceSideLabel(side)}</option>;
+                  })}
+                </select>
+              </label>
+              <label className="replacement-piece-form__asset">Archivo de Biblioteca
+                <select value={replacementAssetPath} onChange={event => { setReplacementAssetPath(event.target.value); setReplacementFeedback(null); }}>
+                  {replacementAssetOptions.map(asset => <option key={asset.relativePath} value={asset.relativePath}>{asset.relativePath}</option>)}
+                </select>
+              </label>
+              <label>Cantidad
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={replacementQuantity}
+                  onChange={event => { setReplacementQuantity(Number(event.target.value) || 0); setReplacementFeedback(null); }}
+                />
+              </label>
+              <div className="replacement-piece-form__actions">
+                <button type="submit" className="batch-primary-button" disabled={isAddingReplacement || isOptimizing || !replacementCollection || replacementAssetOptions.length === 0}>
+                  {isAddingReplacement ? 'Agregando…' : 'Agregar pieza'}
+                </button>
+              </div>
+            </fieldset>
+            {!replacementAssetOptions.length ? (
+              <p className="replacement-piece-empty-hint" role="status">La Biblioteca no tiene archivos personalizados de frente o dorso para esta selección.</p>
+            ) : null}
+            {replacementFeedback ? (
+              <p className={`replacement-feedback is-${replacementFeedback.kind}`} role={replacementFeedback.kind === 'error' ? 'alert' : 'status'}>
+                {replacementFeedback.message}
+              </p>
+            ) : null}
+          </form>
+        </section>
 
         <FreePngPanel
           pieces={freePngs}
@@ -2285,7 +2243,127 @@ export function BatchPage({
           </div>
         </details>
 
+        <section className="batch-final-config" aria-label="Configuración del batch">
+          <p className="batch-selection-summary">
+            {selectedGarmentCount} prendas seleccionadas · cada prenda genera
+            automáticamente un frente y un dorso.
+            {replacementPieces.length > 0
+              ? ` · ${replacementPieces.reduce((total, piece) => total + piece.quantity, 0)} piezas de reposición`
+              : ''}
+          </p>
+          <div className="production-context">
+            <label className="production-fabric-field">
+              <span>TELA DEL BATCH</span>
+              <input
+                type="text"
+                aria-label="Tipo de tela para todo el batch"
+                value={batchFabric}
+                spellCheck={false}
+                autoCorrect="off"
+                autoCapitalize="none"
+                onChange={(event) => {
+                  setBatchFabric(event.target.value);
+                  markOptimizationStale();
+                }}
+              />
+            </label>
+            <div className="segmented-toggle" aria-label="Perfil de salida">
+              {CANVAS_PROFILES.map((selectedProfile) => {
+                const option = selectedProfile.kind;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    aria-pressed={mode === option}
+                    title={selectedProfile.minimumVisibleGapMm ? `${selectedProfile.maxWidth / 10}×${selectedProfile.maxHeight / 10} cm · espacio libre entre contornos ${selectedProfile.minimumVisibleGapMm} mm` : undefined}
+                    className={mode === option ? 'selected' : ''}
+                    onClick={() => {
+                      if (option === mode) return;
+                      operation.current?.abort();
+                      if (exportSuccessTimer.current !== null) window.clearTimeout(exportSuccessTimer.current);
+                      setMode(option);
+                      markOptimizationStale();
+                      preflightElapsedMs.current = 0;
+                    }}
+                  >
+                    {selectedProfile.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <button
+            className="batch-primary-button production-primary-action"
+            type="button"
+            disabled={isOptimizing}
+            onClick={() => void optimizeCollections()}
+          >
+            {isOptimizing ? 'OPTIMIZANDO…' : 'Optimizar batch'}
+            <span aria-hidden="true">→</span>
+          </button>
+        </section>
+
       </fieldset>
+
+      {orderImportOpen ? (
+        <div className="confirm-backdrop order-import-backdrop" role="presentation" onMouseDown={() => setOrderImportOpen(false)}>
+          <section
+            className="confirm-dialog order-import-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="order-import-title"
+            onMouseDown={event => event.stopPropagation()}
+          >
+            <h2 id="order-import-title">Importar pedido</h2>
+            <p>Este pedido reemplazará todas las cantidades actuales de prendas. Reposiciones y PNG libres se conservan.</p>
+            <label className="order-import-input-label" htmlFor="order-import-text">Pegá las entradas separadas por punto y coma</label>
+            <textarea
+              id="order-import-text"
+              value={orderText}
+              onChange={event => setOrderText(event.target.value)}
+              spellCheck={false}
+              placeholder={'Boca 2026 t1=3, t2=3, t3=3; Racing 2026 t7=1;'}
+            />
+            <details className="order-import-help">
+              <summary aria-label="Ver formato esperado">
+                <span className="order-import-help-icon" aria-hidden="true">?</span>
+                <span>Formato esperado</span>
+              </summary>
+              <div className="order-import-help-popover">
+                <strong>Separá cada diseño con punto y coma</strong>
+                <code>Boca 2026 t1=3, t2=3, t3=3; Racing 2026 t7=1;</code>
+                <span>Los talles no incluidos quedan en 0. Se aceptan t1 a t10, sin distinguir mayúsculas.</span>
+              </div>
+            </details>
+            <button type="button" className="secondary-button" onClick={() => setOrderShowPreview(true)}>Validar / preview</button>
+            {orderShowPreview ? (
+              <div className="order-import-preview" aria-live="polite">
+                <div className="order-import-totals">
+                  <span>{orderPreview.lines.filter(line => line.collectionId).length} diseños reconocidos</span>
+                  <span>{orderPreview.lines.filter(line => !line.collectionId).length} diseños sin match inequívoco</span>
+                  <span>{orderPreview.lines.filter(line => line.errors.length).length} entradas con errores</span>
+                  <span>{orderPreview.totalGarments} prendas · {orderPreview.totalPieces} piezas totales</span>
+                </div>
+                {orderPreview.lines.map(line => (
+                  <div className={`order-import-line${line.errors.length ? ' has-error' : ''}`} key={line.entryNumber}>
+                    <strong>{line.designName || `Entrada ${line.entryNumber}`}</strong>
+                    {line.collectionId ? <span>{GARMENT_SIZES.filter(size => line.quantities[size] > 0).map(size => `${size}=${line.quantities[size]}`).join(' · ') || 'sin cantidades (todo quedará en 0)'}</span> : null}
+                    {line.errors.map((error, index) => <span className="order-import-error" key={`${index}-${error}`}>{error}</span>)}
+                    {line.suggestions.length ? <span>Sugerencias: {line.suggestions.join(', ')}</span> : null}
+                  </div>
+                ))}
+                {orderPreview.errors.filter(error => !error.startsWith('Entrada ')).map((error, index) => (
+                  <p className="order-import-error" role="alert" key={`${index}-${error}`}>{error}</p>
+                ))}
+              </div>
+            ) : null}
+            <div className="confirm-dialog-actions">
+              <button type="button" className="confirm-cancel-button" onClick={() => setOrderImportOpen(false)}>CANCELAR</button>
+              <button type="button" className="batch-primary-button order-import-submit" disabled={!orderShowPreview || !orderPreview.confirmable} onClick={applyOrderImport}>Importar</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <div className="batch-production-flow batch-production-flow-after">
         {isOptimizing ? (
@@ -2415,7 +2493,7 @@ export function BatchPage({
       </div>
 
       {optimizationDiagnostics || exportDiagnostics ? (
-        <details className="performance-diagnostics" open>
+        <details className="performance-diagnostics">
           <summary>DIAGNÓSTICO DE RENDIMIENTO</summary>
 
           {optimizationDiagnostics ? (
@@ -2424,7 +2502,7 @@ export function BatchPage({
 
               <pre>
                 {`Perfil ....................... ${optimizationDiagnostics.profileName} ${optimizationDiagnostics.profileWidthMm}×${optimizationDiagnostics.profileHeightMm} mm
-
+${prepared?.profile.laserCutOutline ? `Espacio libre visible ........ ${prepared.profile.minimumVisibleGapMm} mm\nContorno láser ............... ${prepared.profile.laserCutOutlineWidthMm?.toLocaleString('es-AR')} mm negro\n` : ''}
 Preparación colecciones ..... ${optimizationDiagnostics.collectionPreparationMs.toFixed(2)} ms
 Construcción definiciones .... ${optimizationDiagnostics.definitionBuildMs.toFixed(2)} ms
 Extracción contornos ......... ${optimizationDiagnostics.contourExtractionMs.toFixed(2)} ms

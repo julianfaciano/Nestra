@@ -1,3 +1,4 @@
+import { contoursViolateClearance } from './polygon-clearance';
 import {
   createNestingProfile,
   startBlock,
@@ -14,6 +15,7 @@ import { extraPieceId, type ExtraPieceIdentity, type FillerRequest } from './fil
 import { boundsOverlapWithArea, boundsOverlapWithAreaTranslated, polygonsOverlap, createIndexedPolygonOverlap, createPolygonSegmentQuery, createPolygonCollisionDiagnostics, type PolygonCollisionDiagnostics } from './polygon-collision';
 import {
   getPolygonBounds,
+  rotatePoint,
   transformPolygon,
   type PolygonBounds,
   type PieceRotation,
@@ -21,6 +23,9 @@ import {
 } from './polygon-transform';
 
 export interface MultiNestingPiece {
+  /** Exact exterior alpha loops, independent of conservative garment collision. */
+  readonly cutComponents?: readonly Polygon[];
+  readonly cutAnchor?: Polygon;
   readonly collisionComponents?: readonly Polygon[];
   readonly kind?: 'garment' | 'free-png';
   readonly id: string;
@@ -31,6 +36,9 @@ export interface MultiNestingPiece {
 }
 
 export interface MultiNestingCanvas {
+  /** Minimum nominal cut-contour distance, including any centered-stroke width. */
+  readonly minimumPieceClearance?: number;
+  readonly outlineExtentMm?: number;
   readonly width: number;
   readonly height: number;
 }
@@ -66,6 +74,7 @@ export type NestingProgress =
   | { readonly phase: 'finalizing' };
 
 export interface MultiNestedPiece {
+  readonly cutComponents?: readonly Polygon[];
   readonly collisionComponents?: readonly Polygon[];
   /** Absent for existing required instances; never changes their identity. */
   readonly extra?: ExtraPieceIdentity;
@@ -102,6 +111,9 @@ function validateInput(input: MultiNestingInput): void {
     throw new Error('Las dimensiones del canvas deben ser mayores que cero.');
   }
 
+  if (![input.canvas.minimumPieceClearance ?? 0, input.canvas.outlineExtentMm ?? 0].every(v => Number.isFinite(v) && v >= 0)) {
+    throw new Error('Separación o contorno productivo inválido.');
+  }
   const scanStepMm = input.scanStepMm ?? 10;
 
   if (!Number.isFinite(scanStepMm) || scanStepMm <= 0) {
@@ -109,6 +121,10 @@ function validateInput(input: MultiNestingInput): void {
   }
 
   for (const piece of input.pieces) {
+    if (piece.cutComponents && (!piece.cutComponents.length || piece.cutComponents.some(p =>
+      p.length < 3 || p.some(v => !Number.isFinite(v.x) || !Number.isFinite(v.y))))) {
+      throw new Error('Contornos de corte inválidos.');
+    }
     if (piece.collisionComponents && (!piece.collisionComponents.length || piece.collisionComponents.some(p =>
       p.length < 3 || p.some(v => !Number.isFinite(v.x) || !Number.isFinite(v.y))))) {
       throw new Error('Componentes de colisión inválidos.');
@@ -231,6 +247,7 @@ export interface RequiredPieceDiagnostics {
 }
 
 interface Variant {
+  readonly cutComponents?: readonly Polygon[];
   readonly collisionComponents?: readonly Polygon[];
   readonly collisionComponentBounds?: readonly PolygonBounds[];
   readonly polygon: Polygon;
@@ -241,6 +258,7 @@ interface Variant {
 }
 
 interface InternalPiece extends MultiNestedPiece {
+  readonly cutBounds?: PolygonBounds;
   readonly kind?: 'garment' | 'free-png';
   readonly bounds: PolygonBounds;
   readonly finePolygon: Polygon;
@@ -504,6 +522,8 @@ function findPlacementInLayout(
   requiredEnumerationContext?: RequiredEnumerationContext,
   requiredSearchIdentity?: object,
 ): Omit<InternalPiece, 'pieceId'> | null {
+  const clearance = canvas.minimumPieceClearance ?? 0;
+  const extent = canvas.outlineExtentMm ?? 0;
   const profile = diagnostics.profile;
   if (!fillerSearch && requiredEnumerationContext) diagnostics.requiredSearchAttempts++;
   const enumerationState = !fillerSearch && requiredEnumerationContext && requiredSearchIdentity
@@ -525,8 +545,8 @@ function findPlacementInLayout(
   const coordinatesStart = startBlock(profile, 'candidateCoordinates');
   // Cross edge coordinates so a right edge and a top edge from different pieces
   // can define a cavity. Both floor and ceil retain grid alignments on either side.
-  const xs = new Set<number>([0]);
-  const ys = new Set<number>([0]);
+  const xs = new Set<number>([extent]);
+  const ys = new Set<number>([extent]);
   const gridXs = enumerationState ? new Set<number>([0]) : undefined;
   const gridYs = enumerationState ? new Set<number>([0]) : undefined;
   const contactXs = enumerationState ? new Set<number>() : undefined;
@@ -548,7 +568,7 @@ function findPlacementInLayout(
       if (isContact) contactCoordinates?.add(coordinate);
       if (pieceIndex === layout.pieces.length - 1) lastPieceCoordinates?.add(coordinate);
     };
-    if (preferContact && value >= 0 && value <= limit) {
+    if ((preferContact || clearance || extent) && value >= 0 && value <= limit) {
       if (requiredAttempt) {
         if (isX) requiredAttempt.xCoordinatesProposed++;
         else requiredAttempt.yCoordinatesProposed++;
@@ -568,11 +588,23 @@ function findPlacementInLayout(
       }
     }
   };
-  const searchTop = Math.ceil(layout.usedHeight / step) * step;
+  const searchTop = Math.ceil((layout.usedHeight + clearance + extent) / step) * step;
   for (const variant of variants) {
-    add(xs, canvas.width - variant.bounds.width, canvas.width);
+    if (extent && variant.cutComponents) {
+      const cut = getPolygonBounds(variant.cutComponents.flat());
+      add(xs, Math.max(0, extent-cut.minX), canvas.width);
+      add(ys, Math.max(0, extent-cut.minY), canvas.height);
+      add(xs, canvas.width-extent-cut.maxX, canvas.width);
+    }
+    add(xs, canvas.width - variant.bounds.width - extent, canvas.width);
     for (let pieceIndex = 0; pieceIndex < layout.pieces.length; pieceIndex++) {
       const { bounds } = layout.pieces[pieceIndex]!;
+      if (clearance) {
+        add(xs, bounds.minX - variant.bounds.width - clearance, canvas.width, pieceIndex);
+        add(xs, bounds.maxX + clearance, canvas.width, pieceIndex);
+        add(ys, bounds.minY - variant.bounds.height - clearance, searchTop, pieceIndex);
+        add(ys, bounds.maxY + clearance, searchTop, pieceIndex);
+      }
       for (const edge of [bounds.minX, bounds.maxX]) {
         add(xs, edge, canvas.width, pieceIndex);
         add(xs, edge - variant.bounds.width, canvas.width, pieceIndex);
@@ -965,6 +997,29 @@ endBlock(profile, 'fineCandidatePolygon', finePolygonStart);
     continue;
   }
 
+  const cutComponents = variant.cutComponents?.map(p => p.map(v => ({x:v.x+x,y:v.y+y})));
+  let cutBounds: PolygonBounds | undefined;
+  if (clearance || extent) {
+    const nominal = cutComponents ?? collisionComponents ?? (variant.collisionComponents
+      ? variant.collisionComponents.map(p => p.map(v => ({x:v.x+x,y:v.y+y}))) : [finePolygon]);
+    cutBounds = getPolygonBounds(nominal.flat());
+    if (cutBounds.minX < extent - 1e-9 || cutBounds.minY < extent - 1e-9 ||
+        cutBounds.maxX > canvas.width - extent + 1e-9 || cutBounds.maxY > canvas.height - extent + 1e-9) {
+      rejected.add(key); continue;
+    }
+    let invalid = false;
+    for (const neighbor of layout.pieces) {
+      diagnostics.broadPhaseChecks++;
+      const other = neighbor.cutComponents ?? neighbor.collisionComponents ?? [neighbor.finePolygon];
+      const otherBounds = neighbor.cutBounds ?? neighbor.fineBounds;
+      if (Math.hypot(Math.max(0, cutBounds.minX-otherBounds.maxX,otherBounds.minX-cutBounds.maxX),
+        Math.max(0,cutBounds.minY-otherBounds.maxY,otherBounds.minY-cutBounds.maxY)) >= clearance) continue;
+      diagnostics.exactPolygonCollisionChecks++;
+      if (contoursViolateClearance(nominal, other, clearance)) {invalid=true;break;}
+    }
+    if (invalid) {rejected.add(key);continue;}
+  }
+
   const fineNeighbors = new Set<InternalPiece>(newNeighbors);
 
   for (const cell of newNeighbors ? [] : cellKeys(fineBounds)) {
@@ -1038,6 +1093,8 @@ endBlock(profile, 'fineCandidatePolygon', finePolygonStart);
         ))
       : undefined;
     const candidate = {
+      ...(cutBounds ? {cutBounds} : {}),
+      ...(cutComponents ? {cutComponents} : {}),
       ...(placedCollisionComponents ? {collisionComponents:placedCollisionComponents} : {}),
       ...(placedCollisionComponentBounds ? {collisionComponentBounds:placedCollisionComponentBounds} : {}),
       polygon,
@@ -1207,7 +1264,7 @@ export function nestMultiplePieces(
 const key = JSON.stringify([
   sourcePolygon.map((point) => [point.x, point.y]),
   fineSourcePolygon.map((point) => [point.x, point.y]),
-  piece.collisionComponents,
+  piece.collisionComponents, piece.cutComponents, piece.cutAnchor,
 ]);
       let cached = geometry.get(key);
       if (!cached) {
@@ -1243,7 +1300,17 @@ const key = JSON.stringify([
             const collisionComponentBounds = collisionComponents?.map(getPolygonBounds);
             diagnostics.componentBoundsPrecomputations += collisionComponentBounds?.length ?? 0;
 
+            let cutComponents: readonly Polygon[] | undefined;
+            if (piece.cutComponents) {
+              const cutAnchor = piece.cutAnchor ?? fineSourcePolygon;
+              const rotatedAnchor = getPolygonBounds(cutAnchor.map(v => rotatePoint(v, rotation)));
+              cutComponents = piece.cutComponents.map(p => p.map(v => {
+                const r = rotatePoint(v, rotation);
+                return {x:r.x-rotatedAnchor.minX,y:r.y-rotatedAnchor.minY};
+              }));
+            }
             variant = {
+              ...(cutComponents ? {cutComponents} : {}),
               ...(collisionComponents ? {collisionComponents} : {}),
               ...(collisionComponentBounds ? {collisionComponentBounds} : {}),
               polygon,
@@ -1473,7 +1540,7 @@ const fillerStartedAt =
         const placement = findPlacementInLayout(
           variants,
           layout,
-          { width: input.canvas.width, height },
+          { ...input.canvas, height },
           input.scanStepMm ?? 10,
           diagnostics,
           accepts,
@@ -1532,8 +1599,9 @@ const fillerStartedAt =
       index,
       usedWidth: layout.usedWidth,
       usedHeight: layout.usedHeight,
-      pieces: layout.pieces.map(({ pieceId, placement, polygon, extra, collisionComponents }) => ({
+      pieces: layout.pieces.map(({ pieceId, placement, polygon, extra, collisionComponents, cutComponents }) => ({
         ...(collisionComponents ? {collisionComponents} : {}),
+        ...(cutComponents ? {cutComponents} : {}),
         ...(extra ? { extra } : {}),
         pieceId,
         placement,

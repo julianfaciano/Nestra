@@ -1,0 +1,28 @@
+[
+  {
+    "profile": "Calandra",
+    "requiredMs": 4410.884300000001,
+    "candidates": 85059,
+    "broad": 172195,
+    "exact": 114459,
+    "layouts": 1,
+    "usedHeight": [
+      3052.983768501564
+    ],
+    "hash": "34467fa63627f6ece269e790f8885a9388a424c3a8814750870f56d75f9432cb",
+    "maxCutY": 3052.983768501564
+  },
+  {
+    "profile": "Imprenta 2",
+    "requiredMs": 7514.819500000005,
+    "candidates": 150506,
+    "broad": 363646,
+    "exact": 203160,
+    "layouts": 1,
+    "usedHeight": [
+      3252.983768501564
+    ],
+    "hash": "8c700a6dc648d7e8a822eb877f1e8a1cffb9f1b3a3ef6ae00b69e265d93fff95",
+    "maxCutY": 3252.983768501564
+  }
+]
