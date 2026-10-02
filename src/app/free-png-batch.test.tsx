@@ -31,7 +31,7 @@ vi.mock('../export/pdf-prototype', () => ({
   exportPdfPrototype: vi.fn(async () => ['output.pdf']),
 }));
 vi.mock('../persistence/contour-cache', () => ({
-  buildContourCacheKey: vi.fn(async () => 'test'),
+  buildContourCacheKey: vi.fn(async (file: File, options: unknown) => `${file.name}|${JSON.stringify(options)}`),
   loadCachedContourPair: vi.fn(),
   saveCachedContourPair: vi.fn(),
 }));
@@ -210,7 +210,7 @@ it.each([[false, false], [true, false], [true, true]])('adds an edited BACK with
   expect(nested.diagnostics.componentPairExactChecks).toBe(0);
   expect(nested.placedCount).toBe(2);
   console.info(`EDITED_BACK_PATH ${JSON.stringify({ extendedName: extendsSilhouette, rotations: input.pieces[0]!.allowedRotations.length, componentOverlapCalls: nested.diagnostics.componentsOverlapCalls, componentPairExactChecks: nested.diagnostics.componentPairExactChecks })}`);
-  expect(view.container.querySelectorAll('.batch-export-artwork image')).toHaveLength(2);
+  await waitFor(() => expect(view.container.querySelectorAll('.batch-export-artwork image')).toHaveLength(2));
   for (const image of view.container.querySelectorAll('.batch-export-artwork image')) expect(image).toHaveAttribute('href', sourceUrl);
   expect(chooseFreePng).not.toHaveBeenCalled();
   fireEvent.click(currentExportButton()!);
@@ -232,7 +232,7 @@ it.each([[false, false], [true, false], [true, true]])('adds an edited BACK with
   expect(report.layouts[0]!.pieces[0]!.sourceCrop).toMatchObject({ xPx: expectedBounds.x, yPx: expectedBounds.y, widthPx: expectedBounds.width, heightPx: expectedBounds.height });
   expect(getPolygonBounds(exported.polygons.get(definition.id)!).maxX).toBeCloseTo((expectedBounds.x + expectedBounds.width) * definition.physicalWidthMm / definition.sourceWidthPx);
   expect(buildContourCacheKey).toHaveBeenCalledWith(edited.file, expect.objectContaining({ geometryMode: 'all-visible-replacement' }));
-  expect(saveCachedContourPair).toHaveBeenCalledWith('test', expect.objectContaining({ sourceAlphaBounds: expectedBounds, sourcePlacementBounds: expectedBounds }));
+  expect(saveCachedContourPair).toHaveBeenCalledWith(expect.stringContaining(edited.file.name), expect.objectContaining({ sourceAlphaBounds: expectedBounds, sourcePlacementBounds: expectedBounds }));
 
   fireEvent.change(within(row).getByLabelText('Cantidad'), { target: { value: '3' } });
   expect(currentExportButton()).not.toBeInTheDocument();
@@ -439,18 +439,44 @@ it('conserva en diagnóstico el perfil real usado por el resultado', async () =>
 
 it('optimiza garments FRONT/BACK en Imprenta 2 con contornos alpha reales y preview láser', async () => {
   const view=renderGarmentBatch(1);
+  expect(screen.queryByRole('group',{name:'Estrategia de optimización'})).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'Imprenta 2'}));
   expect(screen.getByRole('button',{name:'Imprenta 2'})).toHaveAttribute('aria-pressed','true');
+  expect(screen.getByRole('group',{name:'Estrategia de optimización'})).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Rápida'})).toHaveAttribute('aria-pressed','true');
+  expect(screen.getByRole('button',{name:'Rápida'})).toHaveAttribute('title','Prioriza tiempo de cálculo. Puede usar algo más de material.');
+  expect(screen.getByRole('button',{name:'Exprimir material'})).toHaveAttribute('title','Busca reducir metros. Puede tardar considerablemente más.');
   fireEvent.click(screen.getByRole('button',{name:'Optimizar batch'}));
   await screen.findByRole('region',{name:'Resultado de optimización'});
   const input=vi.mocked(nestInWorker).mock.calls.at(-1)![0];
+  expect(input.searchStrategy).toBe('fast');
   expect(input.canvas).toMatchObject({minimumPieceClearance:6,outlineExtentMm:1.5});
   expect(input.pieces).toHaveLength(2);
   expect(input.pieces.every(p=>p.cutComponents?.length===1 && p.kind==='garment')).toBe(true);
   expect(input.pieces.map(p=>p.allowedRotations)).toEqual(expect.arrayContaining([[0,90,180,-90],[0,180]]));
-  expect(screen.getByText((_,element)=>element?.tagName==='PRE' && Boolean(element.textContent?.includes('Imprenta 2 1480×5000 mm')))).toHaveTextContent('Espacio libre visible ........ 3 mm');
-  expect(view.container.querySelectorAll('.batch-export-artwork polygon[stroke="#000000"]').length).toBeGreaterThanOrEqual(2);
+  expect(screen.getByText((_,element)=>element?.tagName==='PRE' && Boolean(element.textContent?.includes('Imprenta 2 1560×5000 mm')))).toHaveTextContent('Espacio libre visible ........ 3 mm');
+  expect(screen.getByRole('button',{name:'Imprenta 2'})).toHaveAttribute('title','156 × 500 cm · corte láser · espacio libre entre bordes negros 3 mm');
+  await waitFor(() => expect(view.container.querySelectorAll('.batch-export-artwork polygon[stroke="#000000"]').length).toBeGreaterThanOrEqual(2));
   expect(screen.queryByText('Exportación bloqueada')).not.toBeInTheDocument();
+});
+
+it('material starts from a complete quick layout and retains it when cancelled', async () => {
+  const view = renderGarmentBatch(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Imprenta 2' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Exprimir material' }));
+  vi.mocked(nestInWorker)
+    .mockImplementationOnce(async input => nestMultiplePieces(input))
+    .mockImplementationOnce((_input, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('Optimización cancelada.')), { once: true });
+    }));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Optimizar batch' }));
+  await waitFor(() => expect(vi.mocked(nestInWorker)).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(nestInWorker).mock.calls.slice(-2).map(([input]) => input.searchStrategy)).toEqual(['fast', 'material']);
+  fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+  expect(await screen.findByText('Se canceló la búsqueda exhaustiva. Se conserva el layout rápido completo.')).toBeInTheDocument();
+  await waitFor(() => expect(currentExportButton()).toBeEnabled());
+  expect(view.container.querySelector('.batch-export-artwork')).toBeInTheDocument();
 });
 
 it('cuenta garments y PNG required por separado y exporta sólo con todo colocado', async () => {

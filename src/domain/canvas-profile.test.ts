@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CALANDRA_PROFILE,
   DEFAULT_IMPRENTA_PROFILE,
+  DEFAULT_IMPRENTA_2_PROFILE,
   type CanvasProfile,
 } from './canvas-profile';
 import {
@@ -11,6 +12,15 @@ import {
 import { mm } from './units';
 
 describe('CanvasProfile', () => {
+  it('limits the laser profile to 1560 × 5000 without widening legacy profiles', () => {
+    expect(DEFAULT_IMPRENTA_2_PROFILE).toMatchObject({ maxWidth: 1560, maxHeight: 5000 });
+    expect(isCanvasProfileValid(DEFAULT_IMPRENTA_2_PROFILE)).toBe(true);
+    expect(isCanvasProfileValid({ ...DEFAULT_IMPRENTA_2_PROFILE, maxWidth: mm(1561) })).toBe(false);
+    for (const profile of [DEFAULT_CALANDRA_PROFILE, DEFAULT_IMPRENTA_PROFILE]) {
+      expect(profile.maxWidth).toBe(1480);
+      expect(isCanvasProfileValid({ ...profile, maxWidth: mm(1481) })).toBe(false);
+    }
+  });
   it('considera válido el perfil default de imprenta', () => {
     expect(isCanvasProfileValid(DEFAULT_IMPRENTA_PROFILE)).toBe(true);
   });

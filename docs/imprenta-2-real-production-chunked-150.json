@@ -1,0 +1,1534 @@
+{
+  "generatedAt": "2026-10-02T00:23:30.431Z",
+  "status": "completed",
+  "limitMs": 1500000,
+  "elapsedMs": 326140.4815,
+  "metadata": {
+    "dataset": "Real production PNG geometry (read-only)",
+    "searchStrategy": "fast",
+    "chunkSize": 150,
+    "totalPieces": 1276,
+    "logicalPieceTypes": 372,
+    "uniqueRealGeometries": 217,
+    "uniqueGeometryRotationVariants": 608,
+    "benchmarkPieces": 1276,
+    "expandedPieceCopies": 1276,
+    "canvas": {
+      "width": 1559.9833333333333,
+      "height": 4999.99,
+      "minimumPieceClearance": 6,
+      "outlineExtentMm": 1.5
+    }
+  },
+  "latestProgress": {
+    "phase": "finalizing"
+  },
+  "progressSamples": [
+    {
+      "phase": "preparing",
+      "elapsedMs": 506.15400000000005
+    },
+    {
+      "phase": "required",
+      "completed": 100,
+      "total": 1276,
+      "elapsedMs": 8303.0029
+    },
+    {
+      "phase": "required",
+      "completed": 200,
+      "total": 1276,
+      "elapsedMs": 18825.4309
+    },
+    {
+      "phase": "required",
+      "completed": 300,
+      "total": 1276,
+      "elapsedMs": 42942.9838
+    },
+    {
+      "phase": "required",
+      "completed": 400,
+      "total": 1276,
+      "elapsedMs": 62118.8636
+    },
+    {
+      "phase": "required",
+      "completed": 500,
+      "total": 1276,
+      "elapsedMs": 75711.8961
+    },
+    {
+      "phase": "required",
+      "completed": 600,
+      "total": 1276,
+      "elapsedMs": 84867.1861
+    },
+    {
+      "phase": "required",
+      "completed": 700,
+      "total": 1276,
+      "elapsedMs": 99474.4539
+    },
+    {
+      "phase": "required",
+      "completed": 800,
+      "total": 1276,
+      "elapsedMs": 116983.1802
+    },
+    {
+      "phase": "required",
+      "completed": 900,
+      "total": 1276,
+      "elapsedMs": 129089.2704
+    },
+    {
+      "phase": "required",
+      "completed": 1000,
+      "total": 1276,
+      "elapsedMs": 158993.1021
+    },
+    {
+      "phase": "required",
+      "completed": 1100,
+      "total": 1276,
+      "elapsedMs": 192060.73719999997
+    },
+    {
+      "phase": "required",
+      "completed": 1200,
+      "total": 1276,
+      "elapsedMs": 218188.02479999998
+    },
+    {
+      "phase": "finalizing",
+      "elapsedMs": 227864.67789999998
+    }
+  ],
+  "result": {
+    "piecesPlaced": 1276,
+    "totalPieces": 1276,
+    "totalOrderPieces": 1276,
+    "unplaced": 0,
+    "canvases": 67,
+    "usedHeights": [
+      4155.611111111111,
+      2974.7444444444445,
+      2027.2416666666668,
+      1472.7916666666667,
+      1264.8777777777777,
+      935.8583333333333,
+      684.5972222222222,
+      205.05277777777778,
+      4985.611111111111,
+      2874.7444444444445,
+      2017.2416666666668,
+      1695.6416666666667,
+      965.8583333333333,
+      540.2277777777778,
+      423.5527777777778,
+      205.05277777777778,
+      4665.163888888888,
+      2147.241666666667,
+      1597.2416666666668,
+      1402.7916666666667,
+      1215.6416666666667,
+      935.8583333333333,
+      684.5972222222222,
+      403.5527777777778,
+      3955.163888888889,
+      3437.241666666667,
+      1732.7916666666667,
+      1255.6416666666667,
+      965.8583333333333,
+      840.2277777777778,
+      403.5527777777778,
+      4875.611111111111,
+      3176.480555555556,
+      2077.213888888889,
+      1792.7916666666667,
+      1275.6416666666667,
+      621.286111111111,
+      479.5166666666666,
+      205.75833333333324,
+      3772.9611111111117,
+      2114.7444444444445,
+      1807.2416666666668,
+      1512.7916666666667,
+      1165.6416666666667,
+      774.5972222222222,
+      414.60555555555555,
+      4825.611111111111,
+      3140.008333333333,
+      2044.7444444444445,
+      1848.0527777777777,
+      1275.6416666666667,
+      1026.197222222222,
+      605.8583333333333,
+      466.0083333333333,
+      4795.163888888888,
+      2234.3916666666664,
+      1597.2416666666668,
+      1325.6416666666667,
+      1185.6416666666667,
+      810.2277777777778,
+      476.69444444444434,
+      403.5527777777778,
+      4055.163888888889,
+      2194.7444444444445,
+      1107.5944444444444,
+      996.9027777777778,
+      307.3583333333333
+    ],
+    "totalUsedHeightMm": 115961.09722222218,
+    "totalUsedMeters": 115.96109722222218,
+    "canvasesDetail": [
+      {
+        "canvasIndex": 1,
+        "pieces": 27,
+        "nestingUsedHeightMm": 4155.611111111111,
+        "strokeInclusiveHeightMm": 4157.111111111111
+      },
+      {
+        "canvasIndex": 2,
+        "pieces": 25,
+        "nestingUsedHeightMm": 2974.7444444444445,
+        "strokeInclusiveHeightMm": 2976.2444444444445
+      },
+      {
+        "canvasIndex": 3,
+        "pieces": 21,
+        "nestingUsedHeightMm": 2027.2416666666668,
+        "strokeInclusiveHeightMm": 2028.7416666666668
+      },
+      {
+        "canvasIndex": 4,
+        "pieces": 18,
+        "nestingUsedHeightMm": 1472.7916666666667,
+        "strokeInclusiveHeightMm": 1474.2916666666667
+      },
+      {
+        "canvasIndex": 5,
+        "pieces": 20,
+        "nestingUsedHeightMm": 1264.8777777777777,
+        "strokeInclusiveHeightMm": 1266.3777777777777
+      },
+      {
+        "canvasIndex": 6,
+        "pieces": 17,
+        "nestingUsedHeightMm": 935.8583333333333,
+        "strokeInclusiveHeightMm": 937.3583333333333
+      },
+      {
+        "canvasIndex": 7,
+        "pieces": 15,
+        "nestingUsedHeightMm": 684.5972222222222,
+        "strokeInclusiveHeightMm": 686.0972222222222
+      },
+      {
+        "canvasIndex": 8,
+        "pieces": 7,
+        "nestingUsedHeightMm": 205.05277777777778,
+        "strokeInclusiveHeightMm": 206.55277777777778
+      },
+      {
+        "canvasIndex": 9,
+        "pieces": 30,
+        "nestingUsedHeightMm": 4985.611111111111,
+        "strokeInclusiveHeightMm": 4987.111111111111
+      },
+      {
+        "canvasIndex": 10,
+        "pieces": 22,
+        "nestingUsedHeightMm": 2874.7444444444445,
+        "strokeInclusiveHeightMm": 2876.2444444444445
+      },
+      {
+        "canvasIndex": 11,
+        "pieces": 23,
+        "nestingUsedHeightMm": 2017.2416666666668,
+        "strokeInclusiveHeightMm": 2018.7416666666668
+      },
+      {
+        "canvasIndex": 12,
+        "pieces": 25,
+        "nestingUsedHeightMm": 1695.6416666666667,
+        "strokeInclusiveHeightMm": 1697.1416666666667
+      },
+      {
+        "canvasIndex": 13,
+        "pieces": 18,
+        "nestingUsedHeightMm": 965.8583333333333,
+        "strokeInclusiveHeightMm": 967.3583333333333
+      },
+      {
+        "canvasIndex": 14,
+        "pieces": 14,
+        "nestingUsedHeightMm": 540.2277777777778,
+        "strokeInclusiveHeightMm": 541.7277777777778
+      },
+      {
+        "canvasIndex": 15,
+        "pieces": 15,
+        "nestingUsedHeightMm": 423.5527777777778,
+        "strokeInclusiveHeightMm": 425.0527777777778
+      },
+      {
+        "canvasIndex": 16,
+        "pieces": 3,
+        "nestingUsedHeightMm": 205.05277777777778,
+        "strokeInclusiveHeightMm": 206.55277777777778
+      },
+      {
+        "canvasIndex": 17,
+        "pieces": 35,
+        "nestingUsedHeightMm": 4665.163888888888,
+        "strokeInclusiveHeightMm": 4666.663888888888
+      },
+      {
+        "canvasIndex": 18,
+        "pieces": 18,
+        "nestingUsedHeightMm": 2147.241666666667,
+        "strokeInclusiveHeightMm": 2148.741666666667
+      },
+      {
+        "canvasIndex": 19,
+        "pieces": 18,
+        "nestingUsedHeightMm": 1597.2416666666668,
+        "strokeInclusiveHeightMm": 1598.7416666666668
+      },
+      {
+        "canvasIndex": 20,
+        "pieces": 19,
+        "nestingUsedHeightMm": 1402.7916666666667,
+        "strokeInclusiveHeightMm": 1404.2916666666667
+      },
+      {
+        "canvasIndex": 21,
+        "pieces": 17,
+        "nestingUsedHeightMm": 1215.6416666666667,
+        "strokeInclusiveHeightMm": 1217.1416666666667
+      },
+      {
+        "canvasIndex": 22,
+        "pieces": 17,
+        "nestingUsedHeightMm": 935.8583333333333,
+        "strokeInclusiveHeightMm": 937.3583333333333
+      },
+      {
+        "canvasIndex": 23,
+        "pieces": 15,
+        "nestingUsedHeightMm": 684.5972222222222,
+        "strokeInclusiveHeightMm": 686.0972222222222
+      },
+      {
+        "canvasIndex": 24,
+        "pieces": 11,
+        "nestingUsedHeightMm": 403.5527777777778,
+        "strokeInclusiveHeightMm": 405.0527777777778
+      },
+      {
+        "canvasIndex": 25,
+        "pieces": 30,
+        "nestingUsedHeightMm": 3955.163888888889,
+        "strokeInclusiveHeightMm": 3956.663888888889
+      },
+      {
+        "canvasIndex": 26,
+        "pieces": 37,
+        "nestingUsedHeightMm": 3437.241666666667,
+        "strokeInclusiveHeightMm": 3438.741666666667
+      },
+      {
+        "canvasIndex": 27,
+        "pieces": 22,
+        "nestingUsedHeightMm": 1732.7916666666667,
+        "strokeInclusiveHeightMm": 1734.2916666666667
+      },
+      {
+        "canvasIndex": 28,
+        "pieces": 17,
+        "nestingUsedHeightMm": 1255.6416666666667,
+        "strokeInclusiveHeightMm": 1257.1416666666667
+      },
+      {
+        "canvasIndex": 29,
+        "pieces": 17,
+        "nestingUsedHeightMm": 965.8583333333333,
+        "strokeInclusiveHeightMm": 967.3583333333333
+      },
+      {
+        "canvasIndex": 30,
+        "pieces": 17,
+        "nestingUsedHeightMm": 840.2277777777778,
+        "strokeInclusiveHeightMm": 841.7277777777778
+      },
+      {
+        "canvasIndex": 31,
+        "pieces": 10,
+        "nestingUsedHeightMm": 403.5527777777778,
+        "strokeInclusiveHeightMm": 405.0527777777778
+      },
+      {
+        "canvasIndex": 32,
+        "pieces": 32,
+        "nestingUsedHeightMm": 4875.611111111111,
+        "strokeInclusiveHeightMm": 4877.111111111111
+      },
+      {
+        "canvasIndex": 33,
+        "pieces": 24,
+        "nestingUsedHeightMm": 3176.480555555556,
+        "strokeInclusiveHeightMm": 3177.980555555556
+      },
+      {
+        "canvasIndex": 34,
+        "pieces": 22,
+        "nestingUsedHeightMm": 2077.213888888889,
+        "strokeInclusiveHeightMm": 2078.713888888889
+      },
+      {
+        "canvasIndex": 35,
+        "pieces": 21,
+        "nestingUsedHeightMm": 1792.7916666666667,
+        "strokeInclusiveHeightMm": 1794.2916666666667
+      },
+      {
+        "canvasIndex": 36,
+        "pieces": 19,
+        "nestingUsedHeightMm": 1275.6416666666667,
+        "strokeInclusiveHeightMm": 1277.1416666666667
+      },
+      {
+        "canvasIndex": 37,
+        "pieces": 11,
+        "nestingUsedHeightMm": 621.286111111111,
+        "strokeInclusiveHeightMm": 622.786111111111
+      },
+      {
+        "canvasIndex": 38,
+        "pieces": 12,
+        "nestingUsedHeightMm": 479.5166666666666,
+        "strokeInclusiveHeightMm": 481.01666666666654
+      },
+      {
+        "canvasIndex": 39,
+        "pieces": 9,
+        "nestingUsedHeightMm": 205.75833333333324,
+        "strokeInclusiveHeightMm": 207.25833333333324
+      },
+      {
+        "canvasIndex": 40,
+        "pieces": 28,
+        "nestingUsedHeightMm": 3772.9611111111117,
+        "strokeInclusiveHeightMm": 3774.461111111111
+      },
+      {
+        "canvasIndex": 41,
+        "pieces": 23,
+        "nestingUsedHeightMm": 2114.7444444444445,
+        "strokeInclusiveHeightMm": 2116.2444444444445
+      },
+      {
+        "canvasIndex": 42,
+        "pieces": 23,
+        "nestingUsedHeightMm": 1807.2416666666668,
+        "strokeInclusiveHeightMm": 1808.7416666666668
+      },
+      {
+        "canvasIndex": 43,
+        "pieces": 24,
+        "nestingUsedHeightMm": 1512.7916666666667,
+        "strokeInclusiveHeightMm": 1514.2916666666667
+      },
+      {
+        "canvasIndex": 44,
+        "pieces": 21,
+        "nestingUsedHeightMm": 1165.6416666666667,
+        "strokeInclusiveHeightMm": 1167.1416666666667
+      },
+      {
+        "canvasIndex": 45,
+        "pieces": 17,
+        "nestingUsedHeightMm": 774.5972222222222,
+        "strokeInclusiveHeightMm": 776.0972222222222
+      },
+      {
+        "canvasIndex": 46,
+        "pieces": 14,
+        "nestingUsedHeightMm": 414.60555555555555,
+        "strokeInclusiveHeightMm": 416.10555555555555
+      },
+      {
+        "canvasIndex": 47,
+        "pieces": 32,
+        "nestingUsedHeightMm": 4825.611111111111,
+        "strokeInclusiveHeightMm": 4827.111111111111
+      },
+      {
+        "canvasIndex": 48,
+        "pieces": 22,
+        "nestingUsedHeightMm": 3140.008333333333,
+        "strokeInclusiveHeightMm": 3141.508333333333
+      },
+      {
+        "canvasIndex": 49,
+        "pieces": 20,
+        "nestingUsedHeightMm": 2044.7444444444445,
+        "strokeInclusiveHeightMm": 2046.2444444444445
+      },
+      {
+        "canvasIndex": 50,
+        "pieces": 21,
+        "nestingUsedHeightMm": 1848.0527777777777,
+        "strokeInclusiveHeightMm": 1849.5527777777777
+      },
+      {
+        "canvasIndex": 51,
+        "pieces": 17,
+        "nestingUsedHeightMm": 1275.6416666666667,
+        "strokeInclusiveHeightMm": 1277.1416666666667
+      },
+      {
+        "canvasIndex": 52,
+        "pieces": 13,
+        "nestingUsedHeightMm": 1026.197222222222,
+        "strokeInclusiveHeightMm": 1027.697222222222
+      },
+      {
+        "canvasIndex": 53,
+        "pieces": 12,
+        "nestingUsedHeightMm": 605.8583333333333,
+        "strokeInclusiveHeightMm": 607.3583333333333
+      },
+      {
+        "canvasIndex": 54,
+        "pieces": 13,
+        "nestingUsedHeightMm": 466.0083333333333,
+        "strokeInclusiveHeightMm": 467.5083333333333
+      },
+      {
+        "canvasIndex": 55,
+        "pieces": 35,
+        "nestingUsedHeightMm": 4795.163888888888,
+        "strokeInclusiveHeightMm": 4796.663888888888
+      },
+      {
+        "canvasIndex": 56,
+        "pieces": 21,
+        "nestingUsedHeightMm": 2234.3916666666664,
+        "strokeInclusiveHeightMm": 2235.8916666666664
+      },
+      {
+        "canvasIndex": 57,
+        "pieces": 18,
+        "nestingUsedHeightMm": 1597.2416666666668,
+        "strokeInclusiveHeightMm": 1598.7416666666668
+      },
+      {
+        "canvasIndex": 58,
+        "pieces": 20,
+        "nestingUsedHeightMm": 1325.6416666666667,
+        "strokeInclusiveHeightMm": 1327.1416666666667
+      },
+      {
+        "canvasIndex": 59,
+        "pieces": 18,
+        "nestingUsedHeightMm": 1185.6416666666667,
+        "strokeInclusiveHeightMm": 1187.1416666666667
+      },
+      {
+        "canvasIndex": 60,
+        "pieces": 14,
+        "nestingUsedHeightMm": 810.2277777777778,
+        "strokeInclusiveHeightMm": 811.7277777777778
+      },
+      {
+        "canvasIndex": 61,
+        "pieces": 13,
+        "nestingUsedHeightMm": 476.69444444444434,
+        "strokeInclusiveHeightMm": 478.19444444444434
+      },
+      {
+        "canvasIndex": 62,
+        "pieces": 11,
+        "nestingUsedHeightMm": 403.5527777777778,
+        "strokeInclusiveHeightMm": 405.0527777777778
+      },
+      {
+        "canvasIndex": 63,
+        "pieces": 27,
+        "nestingUsedHeightMm": 4055.163888888889,
+        "strokeInclusiveHeightMm": 4056.663888888889
+      },
+      {
+        "canvasIndex": 64,
+        "pieces": 21,
+        "nestingUsedHeightMm": 2194.7444444444445,
+        "strokeInclusiveHeightMm": 2196.2444444444445
+      },
+      {
+        "canvasIndex": 65,
+        "pieces": 12,
+        "nestingUsedHeightMm": 1107.5944444444444,
+        "strokeInclusiveHeightMm": 1109.0944444444444
+      },
+      {
+        "canvasIndex": 66,
+        "pieces": 11,
+        "nestingUsedHeightMm": 996.9027777777778,
+        "strokeInclusiveHeightMm": 998.4027777777778
+      },
+      {
+        "canvasIndex": 67,
+        "pieces": 5,
+        "nestingUsedHeightMm": 307.3583333333333,
+        "strokeInclusiveHeightMm": 308.8583333333333
+      }
+    ],
+    "chunks": [
+      {
+        "chunkIndex": 1,
+        "pieceStart": 1,
+        "pieceEnd": 150,
+        "pieceCount": 150,
+        "elapsedMs": 13629.8804,
+        "placedCount": 150,
+        "canvases": [
+          {
+            "pieceCount": 27,
+            "usedHeight": 4155.611111111111
+          },
+          {
+            "pieceCount": 25,
+            "usedHeight": 2974.7444444444445
+          },
+          {
+            "pieceCount": 21,
+            "usedHeight": 2027.2416666666668
+          },
+          {
+            "pieceCount": 18,
+            "usedHeight": 1472.7916666666667
+          },
+          {
+            "pieceCount": 20,
+            "usedHeight": 1264.8777777777777
+          },
+          {
+            "pieceCount": 17,
+            "usedHeight": 935.8583333333333
+          },
+          {
+            "pieceCount": 15,
+            "usedHeight": 684.5972222222222
+          },
+          {
+            "pieceCount": 7,
+            "usedHeight": 205.05277777777778
+          }
+        ],
+        "closedCanvases": 7,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 7,
+          "nestingUsedHeightMm": 205.05277777777778,
+          "remainingHeightBeforeStrokeMm": 4794.937222222222
+        }
+      },
+      {
+        "chunkIndex": 2,
+        "pieceStart": 151,
+        "pieceEnd": 300,
+        "pieceCount": 150,
+        "elapsedMs": 28807.143600000003,
+        "placedCount": 150,
+        "canvases": [
+          {
+            "pieceCount": 30,
+            "usedHeight": 4985.611111111111
+          },
+          {
+            "pieceCount": 22,
+            "usedHeight": 2874.7444444444445
+          },
+          {
+            "pieceCount": 23,
+            "usedHeight": 2017.2416666666668
+          },
+          {
+            "pieceCount": 25,
+            "usedHeight": 1695.6416666666667
+          },
+          {
+            "pieceCount": 18,
+            "usedHeight": 965.8583333333333
+          },
+          {
+            "pieceCount": 14,
+            "usedHeight": 540.2277777777778
+          },
+          {
+            "pieceCount": 15,
+            "usedHeight": 423.5527777777778
+          },
+          {
+            "pieceCount": 3,
+            "usedHeight": 205.05277777777778
+          }
+        ],
+        "closedCanvases": 7,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 3,
+          "nestingUsedHeightMm": 205.05277777777778,
+          "remainingHeightBeforeStrokeMm": 4794.937222222222
+        }
+      },
+      {
+        "chunkIndex": 3,
+        "pieceStart": 301,
+        "pieceEnd": 450,
+        "pieceCount": 150,
+        "elapsedMs": 29877.868500000004,
+        "placedCount": 150,
+        "canvases": [
+          {
+            "pieceCount": 35,
+            "usedHeight": 4665.163888888888
+          },
+          {
+            "pieceCount": 18,
+            "usedHeight": 2147.241666666667
+          },
+          {
+            "pieceCount": 18,
+            "usedHeight": 1597.2416666666668
+          },
+          {
+            "pieceCount": 19,
+            "usedHeight": 1402.7916666666667
+          },
+          {
+            "pieceCount": 17,
+            "usedHeight": 1215.6416666666667
+          },
+          {
+            "pieceCount": 17,
+            "usedHeight": 935.8583333333333
+          },
+          {
+            "pieceCount": 15,
+            "usedHeight": 684.5972222222222
+          },
+          {
+            "pieceCount": 11,
+            "usedHeight": 403.5527777777778
+          }
+        ],
+        "closedCanvases": 7,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 11,
+          "nestingUsedHeightMm": 403.5527777777778,
+          "remainingHeightBeforeStrokeMm": 4596.437222222222
+        }
+      },
+      {
+        "chunkIndex": 4,
+        "pieceStart": 451,
+        "pieceEnd": 600,
+        "pieceCount": 150,
+        "elapsedMs": 12046.289000000004,
+        "placedCount": 150,
+        "canvases": [
+          {
+            "pieceCount": 30,
+            "usedHeight": 3955.163888888889
+          },
+          {
+            "pieceCount": 37,
+            "usedHeight": 3437.241666666667
+          },
+          {
+            "pieceCount": 22,
+            "usedHeight": 1732.7916666666667
+          },
+          {
+            "pieceCount": 17,
+            "usedHeight": 1255.6416666666667
+          },
+          {
+            "pieceCount": 17,
+            "usedHeight": 965.8583333333333
+          },
+          {
+            "pieceCount": 17,
+            "usedHeight": 840.2277777777778
+          },
+          {
+            "pieceCount": 10,
+            "usedHeight": 403.5527777777778
+          }
+        ],
+        "closedCanvases": 6,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 10,
+          "nestingUsedHeightMm": 403.5527777777778,
+          "remainingHeightBeforeStrokeMm": 4596.437222222222
+        }
+      },
+      {
+        "chunkIndex": 5,
+        "pieceStart": 601,
+        "pieceEnd": 750,
+        "pieceCount": 150,
+        "elapsedMs": 28769.921100000007,
+        "placedCount": 150,
+        "canvases": [
+          {
+            "pieceCount": 32,
+            "usedHeight": 4875.611111111111
+          },
+          {
+            "pieceCount": 24,
+            "usedHeight": 3176.480555555556
+          },
+          {
+            "pieceCount": 22,
+            "usedHeight": 2077.213888888889
+          },
+          {
+            "pieceCount": 21,
+            "usedHeight": 1792.7916666666667
+          },
+          {
+            "pieceCount": 19,
+            "usedHeight": 1275.6416666666667
+          },
+          {
+            "pieceCount": 11,
+            "usedHeight": 621.286111111111
+          },
+          {
+            "pieceCount": 12,
+            "usedHeight": 479.5166666666666
+          },
+          {
+            "pieceCount": 9,
+            "usedHeight": 205.75833333333324
+          }
+        ],
+        "closedCanvases": 7,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 9,
+          "nestingUsedHeightMm": 205.75833333333324,
+          "remainingHeightBeforeStrokeMm": 4794.231666666667
+        }
+      },
+      {
+        "chunkIndex": 6,
+        "pieceStart": 751,
+        "pieceEnd": 900,
+        "pieceCount": 150,
+        "elapsedMs": 15452.008199999997,
+        "placedCount": 150,
+        "canvases": [
+          {
+            "pieceCount": 28,
+            "usedHeight": 3772.9611111111117
+          },
+          {
+            "pieceCount": 23,
+            "usedHeight": 2114.7444444444445
+          },
+          {
+            "pieceCount": 23,
+            "usedHeight": 1807.2416666666668
+          },
+          {
+            "pieceCount": 24,
+            "usedHeight": 1512.7916666666667
+          },
+          {
+            "pieceCount": 21,
+            "usedHeight": 1165.6416666666667
+          },
+          {
+            "pieceCount": 17,
+            "usedHeight": 774.5972222222222
+          },
+          {
+            "pieceCount": 14,
+            "usedHeight": 414.60555555555555
+          }
+        ],
+        "closedCanvases": 6,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 14,
+          "nestingUsedHeightMm": 414.60555555555555,
+          "remainingHeightBeforeStrokeMm": 4585.384444444444
+        }
+      },
+      {
+        "chunkIndex": 7,
+        "pieceStart": 901,
+        "pieceEnd": 1050,
+        "pieceCount": 150,
+        "elapsedMs": 54969.00260000001,
+        "placedCount": 150,
+        "canvases": [
+          {
+            "pieceCount": 32,
+            "usedHeight": 4825.611111111111
+          },
+          {
+            "pieceCount": 22,
+            "usedHeight": 3140.008333333333
+          },
+          {
+            "pieceCount": 20,
+            "usedHeight": 2044.7444444444445
+          },
+          {
+            "pieceCount": 21,
+            "usedHeight": 1848.0527777777777
+          },
+          {
+            "pieceCount": 17,
+            "usedHeight": 1275.6416666666667
+          },
+          {
+            "pieceCount": 13,
+            "usedHeight": 1026.197222222222
+          },
+          {
+            "pieceCount": 12,
+            "usedHeight": 605.8583333333333
+          },
+          {
+            "pieceCount": 13,
+            "usedHeight": 466.0083333333333
+          }
+        ],
+        "closedCanvases": 7,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 13,
+          "nestingUsedHeightMm": 466.0083333333333,
+          "remainingHeightBeforeStrokeMm": 4533.981666666667
+        }
+      },
+      {
+        "chunkIndex": 8,
+        "pieceStart": 1051,
+        "pieceEnd": 1200,
+        "pieceCount": 150,
+        "elapsedMs": 34129.80369999999,
+        "placedCount": 150,
+        "canvases": [
+          {
+            "pieceCount": 35,
+            "usedHeight": 4795.163888888888
+          },
+          {
+            "pieceCount": 21,
+            "usedHeight": 2234.3916666666664
+          },
+          {
+            "pieceCount": 18,
+            "usedHeight": 1597.2416666666668
+          },
+          {
+            "pieceCount": 20,
+            "usedHeight": 1325.6416666666667
+          },
+          {
+            "pieceCount": 18,
+            "usedHeight": 1185.6416666666667
+          },
+          {
+            "pieceCount": 14,
+            "usedHeight": 810.2277777777778
+          },
+          {
+            "pieceCount": 13,
+            "usedHeight": 476.69444444444434
+          },
+          {
+            "pieceCount": 11,
+            "usedHeight": 403.5527777777778
+          }
+        ],
+        "closedCanvases": 7,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 11,
+          "nestingUsedHeightMm": 403.5527777777778,
+          "remainingHeightBeforeStrokeMm": 4596.437222222222
+        }
+      },
+      {
+        "chunkIndex": 9,
+        "pieceStart": 1201,
+        "pieceEnd": 1276,
+        "pieceCount": 76,
+        "elapsedMs": 9676.554000000004,
+        "placedCount": 76,
+        "canvases": [
+          {
+            "pieceCount": 27,
+            "usedHeight": 4055.163888888889
+          },
+          {
+            "pieceCount": 21,
+            "usedHeight": 2194.7444444444445
+          },
+          {
+            "pieceCount": 12,
+            "usedHeight": 1107.5944444444444
+          },
+          {
+            "pieceCount": 11,
+            "usedHeight": 996.9027777777778
+          },
+          {
+            "pieceCount": 5,
+            "usedHeight": 307.3583333333333
+          }
+        ],
+        "closedCanvases": 4,
+        "terminalCanvasPartial": true,
+        "terminalCanvas": {
+          "pieces": 5,
+          "nestingUsedHeightMm": 307.3583333333333,
+          "remainingHeightBeforeStrokeMm": 4692.631666666666
+        }
+      }
+    ],
+    "chunkPartialWasteUpperBoundMm": 41971.915555555555,
+    "chunkPartialWasteUpperBoundMeters": 41.971915555555555,
+    "occupiedAreaMm2": 112001139.24896641,
+    "utilizedCanvasAreaPercent": 21.431794845051368,
+    "usedEnvelopeAreaPercent": 61.91418575516715,
+    "correctness": {
+      "passed": true,
+      "expectedPieces": 1276,
+      "placedPieces": 1276,
+      "duplicateIds": 0,
+      "unexpectedIds": 0,
+      "missingIds": 0,
+      "invalidRotations": 0,
+      "clippedPieces": 0,
+      "emptyContours": 0,
+      "frontBackValid": true,
+      "logicalDesignSizePairs": 186,
+      "exactClearanceChecks": 1474,
+      "bboxPairsSkipped": 11692,
+      "clearanceViolations": 0,
+      "canvasWidthMm": 1559.9833333333333,
+      "canvasHeightMm": 4999.99,
+      "strokeExtentMm": 1.5,
+      "nominalClearanceMm": 6
+    },
+    "memoryApproxBytes": 2224203952,
+    "diagnostics": {
+      "searchStrategy": "fast",
+      "requiredCandidateBudget": 25000,
+      "requiredCandidateBudgetStops": 0,
+      "uniqueGeometries": 217,
+      "uniqueGeometryRotationVariants": 608,
+      "geometryReferenceCacheHits": 930,
+      "polygonTransforms": 1022,
+      "candidatePlacementsTested": 26384984,
+      "candidateCacheHits": 7097655,
+      "broadPhaseChecks": 38290292,
+      "exactPolygonCollisionChecks": 24968811,
+      "layoutsCreated": 67,
+      "requiredMs": 226746.70859999995,
+      "fastChunkNestingElapsedMs": 227479.82400000002,
+      "fastChunkRuns": [
+        {
+          "chunkIndex": 1,
+          "pieceStart": 1,
+          "pieceEnd": 150,
+          "pieceCount": 150,
+          "elapsedMs": 13629.8804,
+          "placedCount": 150,
+          "canvases": [
+            {
+              "pieceCount": 27,
+              "usedHeight": 4155.611111111111
+            },
+            {
+              "pieceCount": 25,
+              "usedHeight": 2974.7444444444445
+            },
+            {
+              "pieceCount": 21,
+              "usedHeight": 2027.2416666666668
+            },
+            {
+              "pieceCount": 18,
+              "usedHeight": 1472.7916666666667
+            },
+            {
+              "pieceCount": 20,
+              "usedHeight": 1264.8777777777777
+            },
+            {
+              "pieceCount": 17,
+              "usedHeight": 935.8583333333333
+            },
+            {
+              "pieceCount": 15,
+              "usedHeight": 684.5972222222222
+            },
+            {
+              "pieceCount": 7,
+              "usedHeight": 205.05277777777778
+            }
+          ]
+        },
+        {
+          "chunkIndex": 2,
+          "pieceStart": 151,
+          "pieceEnd": 300,
+          "pieceCount": 150,
+          "elapsedMs": 28807.143600000003,
+          "placedCount": 150,
+          "canvases": [
+            {
+              "pieceCount": 30,
+              "usedHeight": 4985.611111111111
+            },
+            {
+              "pieceCount": 22,
+              "usedHeight": 2874.7444444444445
+            },
+            {
+              "pieceCount": 23,
+              "usedHeight": 2017.2416666666668
+            },
+            {
+              "pieceCount": 25,
+              "usedHeight": 1695.6416666666667
+            },
+            {
+              "pieceCount": 18,
+              "usedHeight": 965.8583333333333
+            },
+            {
+              "pieceCount": 14,
+              "usedHeight": 540.2277777777778
+            },
+            {
+              "pieceCount": 15,
+              "usedHeight": 423.5527777777778
+            },
+            {
+              "pieceCount": 3,
+              "usedHeight": 205.05277777777778
+            }
+          ]
+        },
+        {
+          "chunkIndex": 3,
+          "pieceStart": 301,
+          "pieceEnd": 450,
+          "pieceCount": 150,
+          "elapsedMs": 29877.868500000004,
+          "placedCount": 150,
+          "canvases": [
+            {
+              "pieceCount": 35,
+              "usedHeight": 4665.163888888888
+            },
+            {
+              "pieceCount": 18,
+              "usedHeight": 2147.241666666667
+            },
+            {
+              "pieceCount": 18,
+              "usedHeight": 1597.2416666666668
+            },
+            {
+              "pieceCount": 19,
+              "usedHeight": 1402.7916666666667
+            },
+            {
+              "pieceCount": 17,
+              "usedHeight": 1215.6416666666667
+            },
+            {
+              "pieceCount": 17,
+              "usedHeight": 935.8583333333333
+            },
+            {
+              "pieceCount": 15,
+              "usedHeight": 684.5972222222222
+            },
+            {
+              "pieceCount": 11,
+              "usedHeight": 403.5527777777778
+            }
+          ]
+        },
+        {
+          "chunkIndex": 4,
+          "pieceStart": 451,
+          "pieceEnd": 600,
+          "pieceCount": 150,
+          "elapsedMs": 12046.289000000004,
+          "placedCount": 150,
+          "canvases": [
+            {
+              "pieceCount": 30,
+              "usedHeight": 3955.163888888889
+            },
+            {
+              "pieceCount": 37,
+              "usedHeight": 3437.241666666667
+            },
+            {
+              "pieceCount": 22,
+              "usedHeight": 1732.7916666666667
+            },
+            {
+              "pieceCount": 17,
+              "usedHeight": 1255.6416666666667
+            },
+            {
+              "pieceCount": 17,
+              "usedHeight": 965.8583333333333
+            },
+            {
+              "pieceCount": 17,
+              "usedHeight": 840.2277777777778
+            },
+            {
+              "pieceCount": 10,
+              "usedHeight": 403.5527777777778
+            }
+          ]
+        },
+        {
+          "chunkIndex": 5,
+          "pieceStart": 601,
+          "pieceEnd": 750,
+          "pieceCount": 150,
+          "elapsedMs": 28769.921100000007,
+          "placedCount": 150,
+          "canvases": [
+            {
+              "pieceCount": 32,
+              "usedHeight": 4875.611111111111
+            },
+            {
+              "pieceCount": 24,
+              "usedHeight": 3176.480555555556
+            },
+            {
+              "pieceCount": 22,
+              "usedHeight": 2077.213888888889
+            },
+            {
+              "pieceCount": 21,
+              "usedHeight": 1792.7916666666667
+            },
+            {
+              "pieceCount": 19,
+              "usedHeight": 1275.6416666666667
+            },
+            {
+              "pieceCount": 11,
+              "usedHeight": 621.286111111111
+            },
+            {
+              "pieceCount": 12,
+              "usedHeight": 479.5166666666666
+            },
+            {
+              "pieceCount": 9,
+              "usedHeight": 205.75833333333324
+            }
+          ]
+        },
+        {
+          "chunkIndex": 6,
+          "pieceStart": 751,
+          "pieceEnd": 900,
+          "pieceCount": 150,
+          "elapsedMs": 15452.008199999997,
+          "placedCount": 150,
+          "canvases": [
+            {
+              "pieceCount": 28,
+              "usedHeight": 3772.9611111111117
+            },
+            {
+              "pieceCount": 23,
+              "usedHeight": 2114.7444444444445
+            },
+            {
+              "pieceCount": 23,
+              "usedHeight": 1807.2416666666668
+            },
+            {
+              "pieceCount": 24,
+              "usedHeight": 1512.7916666666667
+            },
+            {
+              "pieceCount": 21,
+              "usedHeight": 1165.6416666666667
+            },
+            {
+              "pieceCount": 17,
+              "usedHeight": 774.5972222222222
+            },
+            {
+              "pieceCount": 14,
+              "usedHeight": 414.60555555555555
+            }
+          ]
+        },
+        {
+          "chunkIndex": 7,
+          "pieceStart": 901,
+          "pieceEnd": 1050,
+          "pieceCount": 150,
+          "elapsedMs": 54969.00260000001,
+          "placedCount": 150,
+          "canvases": [
+            {
+              "pieceCount": 32,
+              "usedHeight": 4825.611111111111
+            },
+            {
+              "pieceCount": 22,
+              "usedHeight": 3140.008333333333
+            },
+            {
+              "pieceCount": 20,
+              "usedHeight": 2044.7444444444445
+            },
+            {
+              "pieceCount": 21,
+              "usedHeight": 1848.0527777777777
+            },
+            {
+              "pieceCount": 17,
+              "usedHeight": 1275.6416666666667
+            },
+            {
+              "pieceCount": 13,
+              "usedHeight": 1026.197222222222
+            },
+            {
+              "pieceCount": 12,
+              "usedHeight": 605.8583333333333
+            },
+            {
+              "pieceCount": 13,
+              "usedHeight": 466.0083333333333
+            }
+          ]
+        },
+        {
+          "chunkIndex": 8,
+          "pieceStart": 1051,
+          "pieceEnd": 1200,
+          "pieceCount": 150,
+          "elapsedMs": 34129.80369999999,
+          "placedCount": 150,
+          "canvases": [
+            {
+              "pieceCount": 35,
+              "usedHeight": 4795.163888888888
+            },
+            {
+              "pieceCount": 21,
+              "usedHeight": 2234.3916666666664
+            },
+            {
+              "pieceCount": 18,
+              "usedHeight": 1597.2416666666668
+            },
+            {
+              "pieceCount": 20,
+              "usedHeight": 1325.6416666666667
+            },
+            {
+              "pieceCount": 18,
+              "usedHeight": 1185.6416666666667
+            },
+            {
+              "pieceCount": 14,
+              "usedHeight": 810.2277777777778
+            },
+            {
+              "pieceCount": 13,
+              "usedHeight": 476.69444444444434
+            },
+            {
+              "pieceCount": 11,
+              "usedHeight": 403.5527777777778
+            }
+          ]
+        },
+        {
+          "chunkIndex": 9,
+          "pieceStart": 1201,
+          "pieceEnd": 1276,
+          "pieceCount": 76,
+          "elapsedMs": 9676.554000000004,
+          "placedCount": 76,
+          "canvases": [
+            {
+              "pieceCount": 27,
+              "usedHeight": 4055.163888888889
+            },
+            {
+              "pieceCount": 21,
+              "usedHeight": 2194.7444444444445
+            },
+            {
+              "pieceCount": 12,
+              "usedHeight": 1107.5944444444444
+            },
+            {
+              "pieceCount": 11,
+              "usedHeight": 996.9027777777778
+            },
+            {
+              "pieceCount": 5,
+              "usedHeight": 307.3583333333333
+            }
+          ]
+        }
+      ],
+      "clearanceIndexedCalls": 12529,
+      "clearanceSegmentCandidates": 117847915,
+      "clearanceSegmentAabbChecks": 117847915,
+      "clearanceSegmentExactChecks": 8164,
+      "profile": {
+        "sampleEvery": 128,
+        "totalMs": 227357.52869999994,
+        "unclassifiedMs": -8485.139482124754,
+        "timings": {
+          "preparation": {
+            "calls": 9,
+            "samples": 9,
+            "sampledMs": 584.9347999999467,
+            "estimatedMs": 584.9347999999467
+          },
+          "candidateCoordinates": {
+            "calls": 2214,
+            "samples": 2214,
+            "sampledMs": 490.0298999995467,
+            "estimatedMs": 490.0298999995467
+          },
+          "rejectionCache": {
+            "calls": 33482639,
+            "samples": 261591,
+            "sampledMs": 54.28160000303319,
+            "estimatedMs": 6947.835427227845
+          },
+          "candidateBounds": {
+            "calls": 26384984,
+            "samples": 206141,
+            "sampledMs": 19.809299994207777,
+            "estimatedMs": 2535.4881532464296
+          },
+          "candidatePolygon": {
+            "calls": 23375040,
+            "samples": 182623,
+            "sampledMs": 88.85779999760803,
+            "estimatedMs": 11373.455858550607
+          },
+          "canvasFit": {
+            "calls": 23375040,
+            "samples": 182623,
+            "sampledMs": 35.95439999618088,
+            "estimatedMs": 4602.024597595746
+          },
+          "neighborLookup": {
+            "calls": 23375040,
+            "samples": 182623,
+            "sampledMs": 133.75510000264933,
+            "estimatedMs": 17120.13718297218
+          },
+          "boundsOverlap": {
+            "calls": 38273606,
+            "samples": 299021,
+            "sampledMs": 27.938600001363284,
+            "estimatedMs": 3576.0397050500724
+          },
+          "polygonsOverlap": {
+            "calls": 24956282,
+            "samples": 194983,
+            "sampledMs": 1426.8500000015752,
+            "estimatedMs": 182625.51592569254
+          },
+          "clearance": {
+            "calls": 12529,
+            "samples": 102,
+            "sampledMs": 31.984100000027638,
+            "estimatedMs": 3928.7136166700616
+          },
+          "candidateKey": {
+            "calls": 11369021,
+            "samples": 88827,
+            "sampledMs": 15.731299999562452,
+            "estimatedMs": 2013.4585210839668
+          },
+          "fineCandidatePolygon": {
+            "calls": 16311,
+            "samples": 132,
+            "sampledMs": 0.2586999998814008,
+            "estimatedMs": 31.96708862170855
+          },
+          "contact": {
+            "calls": 0,
+            "samples": 0,
+            "sampledMs": 0,
+            "estimatedMs": 0
+          },
+          "componentOverlap": {
+            "calls": 0,
+            "samples": 0,
+            "sampledMs": 0,
+            "estimatedMs": 0
+          },
+          "candidateGeneration": {
+            "calls": 0,
+            "samples": 0,
+            "sampledMs": 0,
+            "estimatedMs": 0
+          }
+        },
+        "counters": {
+          "coordinateSets": 2214,
+          "xCoordinates": 267605,
+          "yCoordinates": 204279,
+          "rejectionCacheLookups": 33482639,
+          "rejectionCacheHits": 7097655,
+          "cellKeys": 133962467,
+          "bucketLookups": 133962467,
+          "neighborCandidates": 259457674,
+          "neighborDuplicates": 166224161,
+          "uniqueNeighbors": 93233513,
+          "segmentPairs": 0,
+          "segmentAabbRejected": 0,
+          "exactSegmentTests": 0,
+          "collinearTests": 0,
+          "pointInPolygonCalls": 0
+        }
+      }
+    }
+  },
+  "limitation": "Real PNG geometry preflight and nesting benchmark; no export or Library import."
+}

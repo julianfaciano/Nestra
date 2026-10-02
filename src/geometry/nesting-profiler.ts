@@ -16,6 +16,7 @@ export const PROFILE_BLOCKS = [
   'neighborLookup',
   'boundsOverlap',
   'polygonsOverlap',
+  'clearance',
 ] as const;
 export type ProfileBlock = (typeof PROFILE_BLOCKS)[number];
 

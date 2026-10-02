@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { GARMENT_SIZES } from '../domain/size';
 import { createMoldOutputPlan, validateMoldPrefix, type MoldOutputSpec } from '../domain/molds-generation';
+import { renderMoldOutput } from '../domain/molds-generation-browser';
 import { physicalSizeFromSourcePixels } from '../domain/source-image-size';
 import type { PieceSide } from '../domain/piece-side';
 
@@ -54,30 +55,6 @@ function encodeUtf8Hex(value: string): string {
   return [...new TextEncoder().encode(value)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function resizeMaster(master: MoldMaster, spec: MoldOutputSpec): Promise<Blob> {
-  const bitmap = await createImageBitmap(master.file);
-  const canvas = document.createElement('canvas');
-  try {
-    canvas.width = spec.widthPx;
-    canvas.height = spec.heightPx;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('No se pudo crear el canvas de generación.');
-    context.clearRect(0, 0, spec.widthPx, spec.heightPx);
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = 'high';
-    context.drawImage(bitmap, 0, 0, spec.widthPx, spec.heightPx);
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob(result => result ? resolve(result) : reject(new Error('No se pudo codificar el PNG generado.')), 'image/png');
-    });
-    if (blob.type !== 'image/png' || blob.size > 32 * 1024 * 1024) throw new Error('El PNG generado supera 32 MiB.');
-    return blob;
-  } finally {
-    bitmap.close();
-    canvas.width = 0;
-    canvas.height = 0;
-  }
-}
-
 export function MoldsPage() {
   const [masters, setMasters] = useState<Partial<Record<PieceSide, MoldMaster>>>({});
   const [prefix, setPrefix] = useState('');
@@ -110,7 +87,7 @@ export function MoldsPage() {
     } catch (error) {
       return { plan: [] as MoldOutputSpec[], error: error instanceof Error ? error.message : String(error) };
     }
-  }, [masters.front?.widthPx, masters.front?.heightPx, masters.back?.widthPx, masters.back?.heightPx, prefix]);
+  }, [masters.front, masters.back, prefix]);
 
   async function selectMaster(side: PieceSide, file?: File): Promise<void> {
     if (!file || busy) return;
@@ -123,6 +100,7 @@ export function MoldsPage() {
         masterUrls.current.delete(previousUrl);
       }
       masterUrls.current.add(url);
+      setConfirmedNoPrintedSizeText(false);
       setMasters(current => ({ ...current, [side]: { ...loaded, url } }));
       setMasterErrors(current => ({ ...current, [side]: undefined }));
       setResults(null);
@@ -138,6 +116,7 @@ export function MoldsPage() {
         delete next[side];
         return next;
       });
+      setConfirmedNoPrintedSizeText(false);
       setMasterErrors(current => ({ ...current, [side]: error instanceof Error ? error.message : String(error) }));
     }
   }
@@ -167,7 +146,7 @@ export function MoldsPage() {
         setProgress(`Generando ${index + 1} de ${planState.plan.length}: ${spec.fileName}`);
         try {
           const master = masters[spec.sourceSide]!;
-          const blob = await resizeMaster(master, spec);
+          const blob = await renderMoldOutput(master.file, spec);
           const bytes = new Uint8Array(await blob.arrayBuffer());
           const result = await invoke<MoldWriteResult>('write_mold_png', bytes, {
             headers: {
@@ -248,9 +227,9 @@ export function MoldsPage() {
           </label>
           <label className="molds-check-row molds-check-row--ack">
             <input type="checkbox" checked={confirmedNoPrintedSizeText} disabled={busy} onChange={event => setConfirmedNoPrintedSizeText(event.target.checked)} />
-            <span>Confirmo que los masters no tienen texto de talle dibujado en la imagen.</span>
+            <span>Confirmo que ambos masters no tienen texto ni número de talle dibujado, para evitar un doble número.</span>
           </label>
-          <p className="molds-help">Nestra conserva la transparencia y no agrega texto. El texto ya rasterizado no se puede detectar con fiabilidad: revisá ambos masters antes de continuar.</p>
+          <p className="molds-help">Nestra agrega sólo el número 1–10 en #8aff00, con 19 px visibles a 72 PPI (6,70 mm), sin fondo, sombra ni borde. Conserva exactamente el canal alpha del molde escalado. Lo ubica centrado y pegado al borde superior local, lo más arriba posible dentro de la silueta opaca; si no existe un lugar válido dentro del límite de 19 px, ese archivo falla. El texto ya rasterizado no se puede detectar con fiabilidad: revisá ambos masters antes de continuar.</p>
         </section>
       </div>
 

@@ -1,0 +1,258 @@
+{
+  "generatedAt": "2026-10-01T23:21:47.163Z",
+  "status": "completed",
+  "limitMs": 180000,
+  "elapsedMs": 44901.937300000005,
+  "metadata": {
+    "dataset": "Synthetic benchmark",
+    "searchStrategy": "material",
+    "garments": 638,
+    "totalPieces": 1276,
+    "logicalPieceTypes": 372,
+    "benchmarkPieces": 200,
+    "syntheticGeometryTypes": 22,
+    "syntheticGeometryRotationVariants": 66,
+    "profiles": 1,
+    "canvas": {
+      "width": 1559.9833333333333,
+      "height": 4999.99,
+      "minimumPieceClearance": 6,
+      "outlineExtentMm": 1.5
+    },
+    "scanStepMm": 10,
+    "geometry": "8-vertex synthetic garment silhouettes"
+  },
+  "latestProgress": {
+    "phase": "finalizing"
+  },
+  "progressSamples": [
+    {
+      "phase": "preparing",
+      "elapsedMs": 422.7631
+    },
+    {
+      "phase": "required",
+      "completed": 100,
+      "total": 200,
+      "elapsedMs": 7157.9596
+    },
+    {
+      "phase": "required",
+      "completed": 200,
+      "total": 200,
+      "elapsedMs": 44873.689
+    },
+    {
+      "phase": "finalizing",
+      "elapsedMs": 44873.8908
+    }
+  ],
+  "result": {
+    "piecesPlaced": 200,
+    "unplaced": 0,
+    "canvases": 4,
+    "usedHeights": [
+      4984.858333333333,
+      4997.038888888889,
+      4993.336111111111,
+      1593.3361111111112
+    ],
+    "totalUsedHeight": 16568.569444444445,
+    "diagnostics": {
+      "searchStrategy": "material",
+      "requiredCandidateBudgetStops": 0,
+      "uniqueGeometries": 22,
+      "uniqueGeometryRotationVariants": 66,
+      "geometryReferenceCacheHits": 152,
+      "requiredMs": 44448.1608,
+      "candidatePlacementsTested": 16657903,
+      "candidateCacheHits": 34847015,
+      "broadPhaseChecks": 29902662,
+      "exactPolygonCollisionChecks": 18617181,
+      "requiredFailedVersionHits": 298,
+      "polygonTransforms": 66,
+      "piecesUsingCollisionComponents": 0,
+      "requiredPieceRanges": [
+        {
+          "pieceStart": 1,
+          "pieceEnd": 25,
+          "elapsedMs": 170.9460000000002,
+          "maxPieceMs": 34.466999999999985,
+          "candidateOpportunities": 115070,
+          "exactCollisionChecks": 25554
+        },
+        {
+          "pieceStart": 26,
+          "pieceEnd": 50,
+          "elapsedMs": 1086.9507000000003,
+          "maxPieceMs": 293.2654,
+          "candidateOpportunities": 939326,
+          "exactCollisionChecks": 474614
+        },
+        {
+          "pieceStart": 51,
+          "pieceEnd": 75,
+          "elapsedMs": 2884.059700000001,
+          "maxPieceMs": 1128.6122000000005,
+          "candidateOpportunities": 3274183,
+          "exactCollisionChecks": 1207640
+        },
+        {
+          "pieceStart": 76,
+          "pieceEnd": 100,
+          "elapsedMs": 2588.542999999998,
+          "maxPieceMs": 1435.375,
+          "candidateOpportunities": 2978974,
+          "exactCollisionChecks": 1175235
+        },
+        {
+          "pieceStart": 101,
+          "pieceEnd": 125,
+          "elapsedMs": 6114.830099999997,
+          "maxPieceMs": 1227.4701999999997,
+          "candidateOpportunities": 9099093,
+          "exactCollisionChecks": 2085208
+        },
+        {
+          "pieceStart": 126,
+          "pieceEnd": 150,
+          "elapsedMs": 12600.379000000003,
+          "maxPieceMs": 3250.9676,
+          "candidateOpportunities": 16119467,
+          "exactCollisionChecks": 4674104
+        },
+        {
+          "pieceStart": 151,
+          "pieceEnd": 175,
+          "elapsedMs": 10277.384200000008,
+          "maxPieceMs": 4525.179400000001,
+          "candidateOpportunities": 6787042,
+          "exactCollisionChecks": 5696888
+        },
+        {
+          "pieceStart": 176,
+          "pieceEnd": 200,
+          "elapsedMs": 8720.687700000017,
+          "maxPieceMs": 2827.3754999999946,
+          "candidateOpportunities": 12191763,
+          "exactCollisionChecks": 3256222
+        }
+      ],
+      "profile": {
+        "sampleEvery": 128,
+        "totalMs": 44451.8443,
+        "unclassifiedMs": -1834.5448091810467,
+        "timings": {
+          "preparation": {
+            "calls": 1,
+            "samples": 1,
+            "sampledMs": 2.6616000000000213,
+            "estimatedMs": 2.6616000000000213
+          },
+          "candidateCoordinates": {
+            "calls": 238,
+            "samples": 238,
+            "sampledMs": 75.52260000001496,
+            "estimatedMs": 75.52260000001496
+          },
+          "rejectionCache": {
+            "calls": 51504918,
+            "samples": 402384,
+            "sampledMs": 108.4245000007059,
+            "estimatedMs": 13878.272947550991
+          },
+          "candidateBounds": {
+            "calls": 16657903,
+            "samples": 130140,
+            "sampledMs": 11.786000000435081,
+            "estimatedMs": 1508.6064604675544
+          },
+          "candidatePolygon": {
+            "calls": 16657887,
+            "samples": 130140,
+            "sampledMs": 20.060699998985115,
+            "estimatedMs": 2567.764513016706
+          },
+          "canvasFit": {
+            "calls": 16657887,
+            "samples": 130140,
+            "sampledMs": 16.1914999992988,
+            "estimatedMs": 2072.5078941818
+          },
+          "neighborLookup": {
+            "calls": 16657887,
+            "samples": 130140,
+            "sampledMs": 90.29960000050488,
+            "estimatedMs": 11558.325902517367
+          },
+          "boundsOverlap": {
+            "calls": 29854300,
+            "samples": 233236,
+            "sampledMs": 19.669399999860616,
+            "estimatedMs": 2517.690958582032
+          },
+          "polygonsOverlap": {
+            "calls": 18595465,
+            "samples": 145278,
+            "sampledMs": 74.645600001037,
+            "estimatedMs": 9554.575656488138
+          },
+          "clearance": {
+            "calls": 21716,
+            "samples": 170,
+            "sampledMs": 1.5088999999964017,
+            "estimatedMs": 192.74866117601093
+          },
+          "candidateKey": {
+            "calls": 14689396,
+            "samples": 114762,
+            "sampledMs": 18.26740000097078,
+            "estimatedMs": 2338.204915430719
+          },
+          "fineCandidatePolygon": {
+            "calls": 22142,
+            "samples": 174,
+            "sampledMs": 0.07299999999474949,
+            "estimatedMs": 9.2894597694468
+          },
+          "contact": {
+            "calls": 641,
+            "samples": 5,
+            "sampledMs": 0.07970000000210575,
+            "estimatedMs": 10.217540000269958
+          },
+          "componentOverlap": {
+            "calls": 0,
+            "samples": 0,
+            "sampledMs": 0,
+            "estimatedMs": 0
+          },
+          "candidateGeneration": {
+            "calls": 0,
+            "samples": 0,
+            "sampledMs": 0,
+            "estimatedMs": 0
+          }
+        },
+        "counters": {
+          "coordinateSets": 238,
+          "xCoordinates": 54926,
+          "yCoordinates": 50801,
+          "rejectionCacheLookups": 51504918,
+          "rejectionCacheHits": 34847015,
+          "cellKeys": 86862307,
+          "bucketLookups": 86862307,
+          "neighborCandidates": 192291989,
+          "neighborDuplicates": 115570824,
+          "uniqueNeighbors": 76721165,
+          "segmentPairs": 0,
+          "segmentAabbRejected": 0,
+          "exactSegmentTests": 0,
+          "collinearTests": 0,
+          "pointInPolygonCalls": 0
+        }
+      }
+    }
+  },
+  "limitation": "Synthetic silhouettes with actual order quantities and audited source dimensions; not the real alpha contours. No export or Library import."
+}

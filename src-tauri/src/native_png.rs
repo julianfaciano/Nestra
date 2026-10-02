@@ -2,9 +2,9 @@
 use crate::png_export::{start_session_at, valid_filename, ExportService};
 use serde::{Deserialize, Serialize};
 use skia_safe::{
-    canvas::SrcRectConstraint, images, surfaces, AlphaType, Codec, CodecResult, Color, ColorSpace,
-    ColorType, CubicResampler, Data, FilterMode, Image, ImageInfo, MipmapMode, Paint, Rect,
-    SamplingOptions,
+    canvas::SrcRectConstraint, image::CachingHint, images, surfaces, AlphaType, Codec, CodecResult,
+    Color, ColorSpace, ColorType, CubicResampler, Data, FilterMode, Image, ImageInfo, MipmapMode,
+    Paint, Rect, SamplingOptions,
 };
 use std::{
     collections::HashMap,
@@ -91,13 +91,38 @@ pub struct NativePiece {
 pub struct NativePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub laser_outline: Option<LaserOutline>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub size_mark_masks: Vec<NativeSizeMarkMask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub size_marks: Vec<NativeSizeMarkPlacement>,
     pub name: String,
     pub width: u32,
     pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_width_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_height_mm: Option<f64>,
     // Pixel coordinates derived from the unchanged physical export plan at 300 PPI.
     pub offset_x: f64,
     pub offset_y: f64,
     pub pieces: Vec<NativePiece>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeSizeMarkMask {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeSizeMarkPlacement {
+    pub piece_index: usize,
+    pub source: u32,
+    pub x: u32,
+    pub y: u32,
+    pub mask_index: usize,
+    pub contour_indices: Vec<usize>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -167,9 +192,26 @@ pub struct RenderResult {
 
 fn validate_plan(plan: &NativePlan, cache: &SourceCache) -> Result<(), String> {
     plan.validate_outline()?;
+    if plan.size_marks.is_empty() != plan.size_mark_masks.is_empty()
+        || plan.size_marks.len() > MAX_PIECES
+        || (!plan.size_marks.is_empty() && plan.laser_outline.is_none())
+    {
+        return Err("Plan de marcadores de talle inválido para esta exportación.".into());
+    }
+    for mask in &plan.size_mark_masks {
+        if mask.width == 0
+            || mask.width > 64
+            || mask.height != 18
+            || mask.data.len() != mask.width as usize * mask.height as usize
+            || mask.data.iter().any(|&value| value != 0 && value != 255)
+            || !mask.data.iter().any(|&value| value != 0)
+        {
+            return Err("Máscara raster del marcador inválida.".into());
+        }
+    }
     if !valid_filename(&plan.name)
         || plan.width == 0
-        || plan.width > 17480
+        || plan.width > 18425
         || plan.height == 0
         || plan.height > 59055
     {
@@ -205,6 +247,38 @@ fn validate_plan(plan: &NativePlan, cache: &SourceCache) -> Result<(), String> {
             return Err("El arte completo excede el PNG planificado.".into());
         }
     }
+    for mark in &plan.size_marks {
+        let Some(piece) = plan.pieces.get(mark.piece_index) else {
+            return Err("El marcador referencia una pieza inexistente.".into());
+        };
+        let Some(mask) = plan.size_mark_masks.get(mark.mask_index) else {
+            return Err("El marcador referencia una máscara inexistente.".into());
+        };
+        let Some(source) = cache.images.get(&mark.source) else {
+            return Err("El marcador referencia una fuente inexistente.".into());
+        };
+        let outline = plan
+            .laser_outline
+            .as_ref()
+            .ok_or("El marcador necesita contorno de corte.")?;
+        if piece.source != mark.source
+            || mark
+                .x
+                .checked_add(mask.width)
+                .is_none_or(|x| x > source.width() as u32)
+            || mark
+                .y
+                .checked_add(mask.height)
+                .is_none_or(|y| y > source.height() as u32)
+            || mark.contour_indices.is_empty()
+            || mark
+                .contour_indices
+                .iter()
+                .any(|&index| index >= outline.contours.len())
+        {
+            return Err("Geometría fuente/contorno del marcador inválida.".into());
+        }
+    }
     Ok(())
 }
 fn piece_bounds(p: &NativePiece, plan: &NativePlan) -> (f64, f64, f64, f64) {
@@ -215,6 +289,153 @@ fn piece_bounds(p: &NativePiece, plan: &NativePlan) -> (f64, f64, f64, f64) {
         -90 => (x, y - p.width, x + p.height, y),
         180 => (x - p.width, y - p.height, x, y),
         _ => (x, y, x + p.width, y + p.height),
+    }
+}
+
+const SIZE_MARK_MAX_DEPTH_MM: f64 = 6.5;
+const PX_PER_MM: f64 = 300. / 25.4;
+
+fn size_mark_image(
+    cache: &SourceCache,
+    placement: &NativeSizeMarkPlacement,
+    mask: &NativeSizeMarkMask,
+) -> Result<Image, String> {
+    let source = cache
+        .images
+        .get(&placement.source)
+        .ok_or("Falta la fuente del marcador.")?;
+    let info = ImageInfo::new(
+        (mask.width as i32, mask.height as i32),
+        ColorType::BGRA8888,
+        AlphaType::Premul,
+        ColorSpace::new_srgb(),
+    );
+    let row_bytes = mask.width as usize * 4;
+    let mut pixels = vec![0; row_bytes * mask.height as usize];
+    if !source.read_pixels(
+        &info,
+        &mut pixels,
+        row_bytes,
+        (placement.x as i32, placement.y as i32),
+        CachingHint::Allow,
+    ) {
+        return Err("No se pudo leer el recorte raster del marcador.".into());
+    }
+    for (index, &ink) in mask.data.iter().enumerate() {
+        let pixel = &mut pixels[index * 4..index * 4 + 4];
+        if ink == 0 {
+            pixel.fill(0);
+            continue;
+        }
+        let alpha = pixel[3] as i32;
+        let lime_r_premul = 138 * alpha;
+        if alpha <= 16 {
+            return Err("El marcador sale del alpha de corte >16.".into());
+        }
+        pixel[0] = 0;
+        pixel[1] = alpha as u8;
+        pixel[2] = (lime_r_premul / 255) as u8;
+    }
+    images::raster_from_data(&info, Data::new_copy(&pixels), row_bytes)
+        .ok_or_else(|| "No se pudo preparar la capa del marcador.".into())
+}
+
+fn map_source_point(
+    p: &NativePiece,
+    plan: &NativePlan,
+    source: &Image,
+    x: f64,
+    y: f64,
+) -> [f64; 2] {
+    let sx = p.width / source.width() as f64;
+    let sy = p.height / source.height() as f64;
+    let tx = p.translate_x - plan.offset_x;
+    let ty = p.translate_y - plan.offset_y;
+    let (x, y) = match p.rotation {
+        90 => (tx - y * sy, ty + x * sx),
+        -90 => (tx + y * sy, ty - x * sx),
+        180 => (tx - x * sx, ty - y * sy),
+        _ => (tx + x * sx, ty + y * sy),
+    };
+    [x, y]
+}
+
+fn marker_page_bounds(
+    placement: &NativeSizeMarkPlacement,
+    mask: &NativeSizeMarkMask,
+    piece: &NativePiece,
+    source: &Image,
+    plan: &NativePlan,
+) -> [f64; 4] {
+    let points = [
+        map_source_point(piece, plan, source, placement.x as f64, placement.y as f64),
+        map_source_point(
+            piece,
+            plan,
+            source,
+            (placement.x + mask.width) as f64,
+            placement.y as f64,
+        ),
+        map_source_point(
+            piece,
+            plan,
+            source,
+            placement.x as f64,
+            (placement.y + mask.height) as f64,
+        ),
+        map_source_point(
+            piece,
+            plan,
+            source,
+            (placement.x + mask.width) as f64,
+            (placement.y + mask.height) as f64,
+        ),
+    ];
+    [
+        points.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min),
+        points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
+        points
+            .iter()
+            .map(|p| p[0])
+            .fold(f64::NEG_INFINITY, f64::max),
+        points
+            .iter()
+            .map(|p| p[1])
+            .fold(f64::NEG_INFINITY, f64::max),
+    ]
+}
+
+fn segment_distance_squared(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let length_squared = dx * dx + dy * dy;
+    let t = if length_squared <= f64::EPSILON {
+        0.
+    } else {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length_squared).clamp(0., 1.)
+    };
+    let x = a[0] + t * dx;
+    let y = a[1] + t * dy;
+    (p[0] - x).powi(2) + (p[1] - y).powi(2)
+}
+
+fn contour_contains_and_distance(point: [f64; 2], contour: &[[f64; 2]]) -> Option<f64> {
+    let mut inside = false;
+    let mut min_distance = f64::INFINITY;
+    for index in 0..contour.len() {
+        let a = contour[index];
+        let b = contour[(index + 1) % contour.len()];
+        min_distance = min_distance.min(segment_distance_squared(point, a, b));
+        let crosses = (a[1] > point[1]) != (b[1] > point[1])
+            && point[0] < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]) + a[0];
+        if crosses {
+            inside = !inside;
+        }
+    }
+    if inside || min_distance <= 1e-12 {
+        Some(min_distance.sqrt())
+    } else {
+        None
     }
 }
 
@@ -252,6 +473,68 @@ fn decode_source(bytes: &[u8], width: u32, height: u32) -> Result<Image, String>
         .ok_or("No se pudo cachear el PNG.".into())
 }
 
+/// Round joins/caps are the union of capsules around the closed contour segments.
+/// The 50% coverage boundary is exactly width/2 from the contour. The one-pixel
+/// coverage ramp is raster filtering, not an increase in the nominal stroke.
+/// All arithmetic uses global pixel centres, independent of strip boundaries.
+fn raster_stroke_strip(
+    outline: &LaserOutline,
+    width: u32,
+    y: u32,
+    rows: u32,
+    mut check: impl FnMut() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
+    let mut pixels = vec![0u8; width as usize * rows as usize * 4];
+    let half = outline.width / 2.0;
+    let support = half + 0.5;
+    for contour in &outline.contours {
+        check()?;
+        for index in 0..contour.len() {
+            let a = contour[index];
+            let b = contour[(index + 1) % contour.len()];
+            let dx = b[0] - a[0];
+            let dy = b[1] - a[1];
+            let length2 = dx * dx + dy * dy;
+            let first_y = ((a[1].min(b[1]) - support).floor().max(y as f64)) as u32;
+            let end_y = ((a[1].max(b[1]) + support).ceil().min((y + rows) as f64))
+                .max(first_y as f64) as u32;
+            for page_y in first_y..end_y {
+                if page_y % 32 == 0 {
+                    check()?;
+                }
+                let py = page_y as f64 + 0.5;
+                // Restrict X to the segment portion near this scanline. This avoids
+                // scanning the large rectangle surrounding a long diagonal.
+                let (t0, t1) = if dy.abs() < 1e-12 {
+                    (0.0, 1.0)
+                } else {
+                    let lo = (py - support - a[1]) / dy;
+                    let hi = (py + support - a[1]) / dy;
+                    (lo.min(hi).clamp(0.0, 1.0), lo.max(hi).clamp(0.0, 1.0))
+                };
+                let x0 = a[0] + t0 * dx;
+                let x1 = a[0] + t1 * dx;
+                let first_x = (x0.min(x1) - support).floor().max(0.0).min(width as f64) as u32;
+                let end_x = (x0.max(x1) + support).ceil().max(0.0).min(width as f64) as u32;
+                for page_x in first_x..end_x {
+                    let px = page_x as f64 + 0.5;
+                    let t = if length2 == 0.0 {
+                        0.0
+                    } else {
+                        ((px - a[0]) * dx + (py - a[1]) * dy) / length2
+                    }
+                    .clamp(0.0, 1.0);
+                    let distance = (px - a[0] - t * dx).hypot(py - a[1] - t * dy);
+                    let alpha = ((half + 0.5 - distance).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let offset = ((page_y - y) as usize * width as usize + page_x as usize) * 4;
+                    pixels[offset + 3] = pixels[offset + 3].max(alpha);
+                }
+            }
+        }
+    }
+    Ok(pixels)
+}
+
 fn render_with_options(
     job: &NativeJob,
     cache: &SourceCache,
@@ -264,6 +547,11 @@ fn render_with_options(
     let start = Instant::now();
     job.check()?;
     validate_plan(plan, cache)?;
+    let marker_images = plan
+        .size_marks
+        .iter()
+        .map(|marker| size_mark_image(cache, marker, &plan.size_mark_masks[marker.mask_index]))
+        .collect::<Result<Vec<_>, _>>()?;
     let encode_start = Instant::now();
     let mut output = start_session_at(destination, plan.width, plan.height, job.id.clone())?;
     let mut diagnostics = RenderDiagnostics {
@@ -281,11 +569,28 @@ fn render_with_options(
         AlphaType::Premul,
         ColorSpace::new_srgb(),
     );
+    let row_bytes = plan.width as usize * 4;
     let mut rgba = vec![0; plan.width as usize * rows as usize * 4];
     let mut rgb = vec![0; plan.width as usize * rows as usize * 3];
-    diagnostics.raster_working_bytes = rgba.len() + rgb.len();
+    let rgba_len = rgba.len();
+    let mut marker_rgba = vec![0; rgba_len];
+    diagnostics.raster_working_bytes = rgba.len()
+        + rgb.len()
+        + if plan.laser_outline.is_some() {
+            2 * rgba.len()
+        } else {
+            0
+        };
     let mut surface = surfaces::wrap_pixels(&info, &mut rgba, None, None)
         .ok_or("No se pudo crear la franja nativa.")?;
+    let mut marker_surface = if plan.size_marks.is_empty() {
+        None
+    } else {
+        Some(
+            surfaces::wrap_pixels(&info, &mut marker_rgba, None, None)
+                .ok_or("No se pudo crear la capa de marcadores.")?,
+        )
+    };
     let bounds: Vec<_> = plan.pieces.iter().map(|p| piece_bounds(p, plan)).collect();
     let mut paint = Paint::default();
     paint.set_anti_alias(false);
@@ -362,34 +667,110 @@ fn render_with_options(
             diagnostics.piece_draws += 1;
         }
         if let Some(outline) = &plan.laser_outline {
+            let stroke = raster_stroke_strip(outline, plan.width, y, rows, || job.check())?;
+            let stroke_image = images::raster_from_data(&info, Data::new_copy(&stroke), row_bytes)
+                .ok_or("No se pudo preparar el stroke nativo.")?;
             canvas.reset_matrix();
-            canvas.translate((0.0, -(y as f32)));
-            let mut line = Paint::default();
-            line.set_color(Color::BLACK);
-            line.set_anti_alias(true);
-            line.set_style(skia_safe::paint::Style::Stroke);
-            line.set_stroke_width(outline.width as f32);
-            line.set_stroke_join(skia_safe::paint::Join::Round);
-            line.set_stroke_cap(skia_safe::paint::Cap::Round);
-            for contour in &outline.contours {
-                let half = outline.width / 2.0;
-                let top = contour.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min) - half;
-                let bottom = contour
-                    .iter()
-                    .map(|p| p[1])
-                    .fold(f64::NEG_INFINITY, f64::max)
-                    + half;
-                if bottom < y as f64 - 1.0 || top > (y + actual_rows) as f64 + 1.0 {
+            canvas.draw_image(&stroke_image, (0.0, 0.0), None);
+        }
+        if let (Some(layer), Some(outline)) = (marker_surface.as_mut(), plan.laser_outline.as_ref())
+        {
+            let layer_canvas = layer.canvas();
+            layer_canvas.reset_matrix();
+            layer_canvas.clear(Color::TRANSPARENT);
+            let mut marker_paint = Paint::default();
+            marker_paint.set_anti_alias(false);
+            for (mark_index, marker) in plan.size_marks.iter().enumerate() {
+                job.check()?;
+                let mask = &plan.size_mark_masks[marker.mask_index];
+                let piece = &plan.pieces[marker.piece_index];
+                let source = &cache.images[&marker.source];
+                let bounds = marker_page_bounds(marker, mask, piece, source, plan);
+                if bounds[3] < y as f64 - 2.0 || bounds[1] > (y + actual_rows) as f64 + 2.0 {
                     continue;
                 }
-                let mut path = skia_safe::PathBuilder::new();
-                path.move_to((contour[0][0] as f32, contour[0][1] as f32));
-                for point in &contour[1..] {
-                    path.line_to((point[0] as f32, point[1] as f32));
-                }
-                path.close();
-                canvas.draw_path(&path.detach(), &line);
+                layer_canvas.save();
+                layer_canvas.translate((
+                    (piece.translate_x - plan.offset_x) as f32,
+                    (piece.translate_y - plan.offset_y - y as f64) as f32,
+                ));
+                layer_canvas.rotate(piece.rotation as f32, None);
+                layer_canvas.scale((
+                    piece.width as f32 / source.width() as f32,
+                    piece.height as f32 / source.height() as f32,
+                ));
+                let sampling = SamplingOptions::new(FilterMode::Nearest, MipmapMode::None);
+                layer_canvas.draw_image_rect_with_sampling_options(
+                    &marker_images[mark_index],
+                    Some((
+                        &Rect::from_wh(mask.width as f32, mask.height as f32),
+                        SrcRectConstraint::Strict,
+                    )),
+                    Rect::from_xywh(
+                        marker.x as f32,
+                        marker.y as f32,
+                        mask.width as f32,
+                        mask.height as f32,
+                    ),
+                    sampling,
+                    &marker_paint,
+                );
+                layer_canvas.restore();
             }
+
+            let layer_pixels = layer
+                .peek_pixels()
+                .ok_or("Capa de marcador no disponible.")?;
+            let layer_bytes = layer_pixels.bytes().ok_or("Capa de marcador no legible.")?;
+            let max_depth_squared = (SIZE_MARK_MAX_DEPTH_MM * PX_PER_MM).powi(2);
+            let mut safe_layer = vec![0; rgba_len];
+            for marker in &plan.size_marks {
+                let mask = &plan.size_mark_masks[marker.mask_index];
+                let piece = &plan.pieces[marker.piece_index];
+                let source = &cache.images[&marker.source];
+                let bounds = marker_page_bounds(marker, mask, piece, source, plan);
+                let min_x = (bounds[0].floor() as i64 - 2).max(0) as u32;
+                let max_x = (bounds[2].ceil() as u64 + 2).min(plan.width as u64) as u32;
+                let min_page_y = (bounds[1].floor() as i64 - 2).max(0) as u32;
+                let max_page_y = (bounds[3].ceil() as u64 + 2).min(plan.height as u64) as u32;
+                let start_y = min_page_y.max(y);
+                let end_y = max_page_y.min(y + actual_rows);
+                for page_y in start_y..end_y {
+                    for page_x in min_x..max_x {
+                        let contour_distance = marker
+                            .contour_indices
+                            .iter()
+                            .filter_map(|&index| {
+                                contour_contains_and_distance(
+                                    [page_x as f64 + 0.5, page_y as f64 + 0.5],
+                                    &outline.contours[index],
+                                )
+                            })
+                            .fold(None, |current: Option<f64>, next| {
+                                Some(current.map_or(next, |value| value.min(next)))
+                            });
+                        let Some(distance) = contour_distance else {
+                            continue;
+                        };
+                        if distance * distance > max_depth_squared + 1e-9 {
+                            continue;
+                        }
+                        let layer_offset =
+                            ((page_y - y) as usize * plan.width as usize + page_x as usize) * 4;
+                        if layer_bytes[layer_offset + 3] == 0 {
+                            continue;
+                        }
+                        safe_layer[layer_offset..layer_offset + 4]
+                            .copy_from_slice(&layer_bytes[layer_offset..layer_offset + 4]);
+                    }
+                }
+            }
+            let safe_image =
+                images::raster_from_data(&info, Data::new_copy(&safe_layer), row_bytes)
+                    .ok_or("No se pudo preparar la capa segura del marcador.")?;
+            let output_canvas = surface.canvas();
+            output_canvas.reset_matrix();
+            output_canvas.draw_image(&safe_image, (0.0, 0.0), None);
         }
         diagnostics.composition_ms += compose.elapsed().as_secs_f64() * 1000.0;
 
@@ -645,6 +1026,68 @@ mod tests {
             decoded_bytes: 7 * 5 * 4,
         }
     }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct StagedMarkerProbe {
+        source_path: PathBuf,
+        source_width: u32,
+        source_height: u32,
+        plan: NativePlan,
+    }
+    #[derive(serde::Deserialize)]
+    struct StagedMarkerProbeManifest {
+        samples: Vec<StagedMarkerProbe>,
+    }
+    #[test]
+    #[ignore = "requires a staged depth8 probe manifest and export directory"]
+    fn render_staged_marker_probes_with_native_imprenta2_rasterizer() {
+        let manifest_path = std::env::var_os("NESTRA_IMPRENTA2_PROBE_INPUT")
+            .expect("NESTRA_IMPRENTA2_PROBE_INPUT is required");
+        let output_dir = PathBuf::from(
+            std::env::var_os("NESTRA_IMPRENTA2_PROBE_OUTPUT")
+                .expect("NESTRA_IMPRENTA2_PROBE_OUTPUT is required"),
+        );
+        fs::create_dir_all(&output_dir).unwrap();
+        let input: StagedMarkerProbeManifest =
+            serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
+        assert_eq!(input.samples.len(), 6, "expected T1/T8/T10 front and back");
+        for sample in input.samples {
+            let bytes = fs::read(&sample.source_path).unwrap();
+            assert!(bytes.len() >= 24 && bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+            let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+            let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+            assert_eq!((width, height), (sample.source_width, sample.source_height));
+            let image = decode_source(&bytes, width, height).unwrap();
+            let cache = SourceCache {
+                images: HashMap::from([(0, image)]),
+                decoded_bytes: (width as usize) * (height as usize) * 4,
+            };
+            assert_eq!(
+                sample.plan.width, 18425,
+                "Imprenta 2 width must be 1560 mm at 300 PPI"
+            );
+            assert_eq!(
+                sample.plan.laser_outline.as_ref().unwrap().width,
+                3.0 * PX_PER_MM
+            );
+            let destination = output_dir.join(&sample.plan.name);
+            let result = render(
+                &job(&output_dir),
+                &cache,
+                &sample.plan,
+                &destination,
+                |_| {},
+            )
+            .unwrap();
+            let (out_width, out_height, pixels) = read_rgb(&result.path);
+            assert_eq!(
+                (out_width, out_height),
+                (sample.plan.width, sample.plan.height)
+            );
+            assert!(pixels.chunks_exact(3).any(|pixel| pixel == [138, 255, 0]));
+            println!("Rendered staged Imprenta 2 probe: {}", result.path);
+        }
+    }
     #[allow(dead_code)]
     #[derive(Debug)]
     struct DiffSummary {
@@ -864,6 +1307,10 @@ mod tests {
         };
         let plan = NativePlan {
             laser_outline: None,
+            size_mark_masks: vec![],
+            size_marks: vec![],
+            page_width_mm: None,
+            page_height_mm: None,
             name: "polar_1_copia.png".into(),
             width: 2,
             height: 1,
@@ -897,7 +1344,11 @@ mod tests {
             decoded_bytes: 4,
         };
         let plan = NativePlan {
-            name: "laser.png".into(),
+            name: "laser_1_copia.png".into(),
+            size_mark_masks: vec![],
+            size_marks: vec![],
+            page_width_mm: None,
+            page_height_mm: None,
             width: 64,
             height: 64,
             offset_x: 0.,
@@ -936,16 +1387,247 @@ mod tests {
         )
         .unwrap();
         let pixels = read_rgb(&a.path).2;
-        assert_eq!(pixels, read_rgb(&b.path).2);
+        let reference = read_rgb(&b.path).2;
+        let delta = summarize(&pixels, &reference, plan.width);
+        assert!(pixels == reference, "strip invariance: {delta:?}");
+        for rows in [1, 2, 13, 31] {
+            let result = render_with_options(
+                &job(dir.path()),
+                &cache,
+                &plan,
+                &dir.path().join(format!("rows-{rows}.png")),
+                |_| {},
+                rows,
+                SrcRectConstraint::Strict,
+            )
+            .unwrap();
+            let actual = read_rgb(&result.path).2;
+            assert!(
+                actual == reference,
+                "rows={rows}: {:?}",
+                summarize(&actual, &reference, plan.width)
+            );
+        }
+        assert!(pixels.chunks_exact(3).all(|p| p[0] == p[1] && p[1] == p[2]));
         let pixel = |x: usize, y: usize| &pixels[(y * 64 + x) * 3..(y * 64 + x) * 3 + 3];
         assert_eq!(pixel(30, 10), &[0, 0, 0]);
         assert_eq!(pixel(30, 29), &[0, 0, 0]);
+        // A 2px nominal horizontal stroke covers precisely these two full rows.
+        assert_eq!(pixel(30, 8), &[255, 255, 255]);
+        assert_eq!(pixel(30, 9), &[0, 0, 0]);
+        assert_eq!(pixel(30, 11), &[255, 255, 255]);
+        // sqrt(2) distance from the diagonal: coverage round(255*(1.5-sqrt(2))).
+        assert_eq!(pixel(30, 27), &[233, 233, 233]);
         assert_eq!(pixel(49, 40), &[255, 255, 255]);
         assert_eq!(pixel(20, 20), &[255, 255, 255]);
         let mut invalid = plan.clone();
         invalid.laser_outline.as_mut().unwrap().contours[0][0][0] = 0.;
         assert!(invalid.validate_outline().is_err());
     }
+    #[test]
+    #[ignore = "diagnostic for the replaced Skia stroke rasterizer"]
+    fn skia_stroke_clip_dependency_diagnostic() {
+        let render = |strip: i32| {
+            let info = ImageInfo::new(
+                (64, 64),
+                ColorType::BGRA8888,
+                AlphaType::Premul,
+                ColorSpace::new_srgb(),
+            );
+            let mut surface = surfaces::raster(&info, None, None).unwrap();
+            let canvas = surface.canvas();
+            canvas.clear(Color::WHITE);
+            let mut line = Paint::default();
+            line.set_color(Color::BLACK);
+            line.set_anti_alias(true);
+            line.set_style(skia_safe::paint::Style::Stroke);
+            line.set_stroke_width(2.0);
+            line.set_stroke_join(skia_safe::paint::Join::Round);
+            line.set_stroke_cap(skia_safe::paint::Cap::Round);
+            let mut builder = skia_safe::PathBuilder::new();
+            builder
+                .move_to((10.0, 10.0))
+                .line_to((50.0, 10.0))
+                .line_to((10.0, 50.0))
+                .close();
+            let path = builder.detach();
+            for y in (0..64).step_by(strip as usize) {
+                canvas.save();
+                canvas.clip_rect(
+                    Rect::new(0.0, y as f32, 64.0, (y + strip).min(64) as f32),
+                    None,
+                    Some(false),
+                );
+                canvas.draw_path(&path, &line);
+                canvas.restore();
+            }
+            surface
+                .peek_pixels()
+                .unwrap()
+                .bytes()
+                .unwrap()
+                .chunks_exact(4)
+                .flat_map(|pixel| [pixel[2], pixel[1], pixel[0]])
+                .collect::<Vec<_>>()
+        };
+        let narrow = render(7);
+        let full = render(64);
+        println!(
+            "Fixed 64x64 surface, identity matrix, only clip changes: {:?}",
+            summarize(&narrow, &full, 64)
+        );
+    }
+    #[test]
+    fn optional_physical_page_fields_keep_legacy_plans_and_camel_case() {
+        let mut plan: NativePlan =
+            serde_json::from_slice(&fs::read(fixture_dir().join("0.json")).unwrap()).unwrap();
+        assert_eq!(plan.page_width_mm, None);
+        assert_eq!(plan.page_height_mm, None);
+        let value = serde_json::to_value(&plan).unwrap();
+        assert!(value.get("pageWidthMm").is_none());
+        assert!(value.get("pageHeightMm").is_none());
+        plan.page_width_mm = Some(1560.);
+        plan.page_height_mm = Some(5000.);
+        let value = serde_json::to_value(&plan).unwrap();
+        assert_eq!(value["pageWidthMm"], 1560.);
+        assert_eq!(value["pageHeightMm"], 5000.);
+        let decoded: NativePlan = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.page_width_mm, Some(1560.));
+        assert_eq!(decoded.page_height_mm, Some(5000.));
+    }
+
+    #[test]
+    fn laser_1560_mm_raster_has_opaque_black_stroke_and_preserves_artwork() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = source_png(1, 1, &[255, 0, 0, 128]);
+        let cache = SourceCache {
+            images: HashMap::from([(0, decode_source(&png, 1, 1).unwrap())]),
+            decoded_bytes: 4,
+        };
+        let width = (1560_f64 * 300. / 25.4).floor() as u32;
+        assert_eq!(width, 18425);
+        let mut plan = NativePlan {
+            name: "laser_1_copia.png".into(),
+            size_mark_masks: vec![],
+            size_marks: vec![],
+            width,
+            height: 64,
+            page_width_mm: None,
+            page_height_mm: None,
+            offset_x: 0.,
+            offset_y: 0.,
+            pieces: vec![NativePiece {
+                source: 0,
+                translate_x: width as f64 - 80.,
+                translate_y: 12.25,
+                width: 40.,
+                height: 40.,
+                rotation: 0,
+            }],
+            laser_outline: None,
+        };
+        let baseline = render(
+            &job(dir.path()),
+            &cache,
+            &plan,
+            &dir.path().join("artwork.png"),
+            |_| {},
+        )
+        .unwrap();
+        let artwork = read_rgb(&baseline.path).2;
+        let stroke_width = 3. * 300. / 25.4;
+        let half = stroke_width / 2.;
+        plan.page_width_mm = Some(1560.);
+        plan.page_height_mm = Some(64. * 25.4 / 300.);
+        plan.laser_outline = Some(LaserOutline {
+            width: stroke_width,
+            contours: vec![vec![
+                [half, half],
+                [width as f64 - half, half],
+                [half, 64. - half],
+            ]],
+        });
+        let output = render_with_options(
+            &job(dir.path()),
+            &cache,
+            &plan,
+            &dir.path().join(&plan.name),
+            |_| {},
+            7,
+            SrcRectConstraint::Fast,
+        )
+        .unwrap();
+        let (actual_width, height, rgb) = read_rgb(&output.path);
+        assert_eq!((actual_width, height), (18425, 64));
+        let mut black = 0;
+        let mut preserved_color = 0;
+        let mut edge_coverage = 0;
+        for (pixel, original) in rgb.chunks_exact(3).zip(artwork.chunks_exact(3)) {
+            if pixel == [0, 0, 0] {
+                black += 1;
+            } else if pixel == original {
+                if pixel != [255, 255, 255] {
+                    preserved_color += 1;
+                }
+            } else {
+                edge_coverage += 1;
+                // Black coverage scales every artwork channel equally; it must
+                // neither tint the edge nor alter unrelated artwork pixels.
+                let remaining = pixel[0] as f64 / original[0] as f64;
+                for channel in 0..3 {
+                    assert!(
+                        (pixel[channel] as f64 - original[channel] as f64 * remaining).abs() <= 1.0
+                    );
+                }
+            }
+        }
+        assert!(black > 0);
+        assert!(preserved_color > 0);
+        assert!(edge_coverage > 0);
+        let full = render_with_options(
+            &job(dir.path()),
+            &cache,
+            &plan,
+            &dir.path().join("full.png"),
+            |_| {},
+            64,
+            SrcRectConstraint::Fast,
+        )
+        .unwrap();
+        let full_pixels = read_rgb(&full.path).2;
+        assert!(
+            rgb == full_pixels,
+            "1560 mm strip invariance: {:?}",
+            summarize(&rgb, &full_pixels, width)
+        );
+        let reader = png::Decoder::new(std::io::BufReader::new(
+            fs::File::open(&output.path).unwrap(),
+        ))
+        .read_info()
+        .unwrap();
+        assert_eq!(reader.info().color_type, png::ColorType::Rgb);
+        let mut invalid = plan.clone();
+        invalid.width = 18426;
+        let overflow = dir.path().join("too-wide.png");
+        assert!(render(&job(dir.path()), &cache, &invalid, &overflow, |_| {}).is_err());
+        assert!(!overflow.exists());
+        for (axis, value) in [
+            (0, half - 0.001),
+            (1, half - 0.001),
+            (0, width as f64 - half + 0.001),
+            (1, 64. - half + 0.001),
+        ] {
+            let mut invalid = plan.clone();
+            invalid.laser_outline.as_mut().unwrap().contours[0][0][axis] = value;
+            assert!(invalid.validate_outline().is_err());
+            let overflow = dir
+                .path()
+                .join(format!("stroke-overflow-{axis}-{value}.png"));
+            assert!(render(&job(dir.path()), &cache, &invalid, &overflow, |_| {}).is_err());
+            assert!(!overflow.exists());
+        }
+    }
+
     #[test]
     fn cancel_after_a_strip_removes_partial_and_does_not_publish() {
         let dir = tempfile::tempdir().unwrap();
@@ -1003,7 +1685,7 @@ mod tests {
         p.name = "../polar_1_copia.png".into();
         invalid.push(p);
         let mut p = base.clone();
-        p.width = 17481;
+        p.width = 18426;
         invalid.push(p);
         let mut p = base.clone();
         p.height = 59056;

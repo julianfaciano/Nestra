@@ -31,6 +31,11 @@ import { HistoricalJobs } from './historical-jobs';
 import { completedActivityCleanup } from './activity-lifecycle';
 import { saveDesignCollections } from '../persistence/design-collections';
 import { mergeDesignCollectionList } from './design-collection-identity';
+import {
+  CURRENT_RELEASE,
+  releaseStageLabel,
+} from '../domain/release-notes';
+import { ReleaseUpdates } from './release-updates';
 
 type View = 'home' | 'templates' | 'batch' | 'jobs' | 'molds';
 const SIDEBAR_SESSION_KEY = 'nestra:sidebar-collapsed';
@@ -751,7 +756,16 @@ export default function App() {
         ) : view === 'home' ? (
           <section className="home-page">
             <div className="home-identity">
-              <p className="home-kicker">Producción textil</p>
+              <div className="home-overline">
+                <p className="home-kicker">Producción textil</p>
+                <p
+                  className="home-version"
+                  aria-label={`Versión actual: Nestra v${CURRENT_RELEASE.version} ${releaseStageLabel(CURRENT_RELEASE.stage)}`}
+                >
+                  Nestra v{CURRENT_RELEASE.version}{' '}
+                  <span>{releaseStageLabel(CURRENT_RELEASE.stage)}</span>
+                </p>
+              </div>
               <h1>Nestra</h1>
               <p className="home-statement">
                 Prepará, optimizá y exportá layouts listos para producción.
@@ -802,6 +816,7 @@ export default function App() {
                 </button>
               ) : null}
             </div>
+            <ReleaseUpdates />
           </section>
         ) : view === 'batch' ? null : (
           <section className="templates-page">

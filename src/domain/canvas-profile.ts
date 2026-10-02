@@ -16,6 +16,7 @@ export interface CanvasProfile {
 }
 
 export const HARD_MAX_CANVAS_WIDTH = mm(1480);
+export const IMPRENTA_2_MAX_CANVAS_WIDTH = mm(1560);
 export const HARD_MAX_CALANDRA_HEIGHT = mm(5000);
 
 export const DEFAULT_IMPRENTA_PROFILE: CanvasProfile = {
@@ -45,7 +46,7 @@ export const DEFAULT_IMPRENTA_2_PROFILE: CanvasProfile = {
   id: 'imprenta-2',
   name: 'Imprenta 2',
   kind: 'imprenta-2',
-  maxWidth: mm(1480),
+  maxWidth: IMPRENTA_2_MAX_CANVAS_WIDTH,
   maxHeight: mm(5000),
   defaultPpi: 300,
   minimumVisibleGapMm: IMPRENTA_2_MINIMUM_VISIBLE_GAP_MM,
@@ -59,6 +60,9 @@ export const CANVAS_PROFILES = [
 ] as const;
 export function canvasProfileHeightLimit(profile: CanvasProfile): number {
   return profile.kind === 'imprenta' ? 1000 : HARD_MAX_CALANDRA_HEIGHT;
+}
+export function canvasProfileWidthLimit(profile: CanvasProfile): number {
+  return profile.kind === 'imprenta-2' ? IMPRENTA_2_MAX_CANVAS_WIDTH : HARD_MAX_CANVAS_WIDTH;
 }
 export function outlineExtentMm(profile: CanvasProfile): number {
   return profile.laserCutOutline
@@ -80,19 +84,23 @@ export function nominalSilhouetteClearanceMm(profile: CanvasProfile): number {
 }
 
 /** Raster-safe physical limits: only laser profiles need the complete centered line.
- * Fixed 300-PPI export rounds width down by 0.027 mm; reserve that fractional pixel
+ * Fixed 300-PPI export rounds raster width down by less than one pixel; reserve that fraction
  * at the right/bottom, never a clearance-sized material margin.
  */
 export function nestingCanvasForProfile(profile: CanvasProfile) {
   const pixelsPerMm = PRODUCTIVE_EXPORT_PPI / 25.4;
+  const exteriorStrokeMargin = outlineExtentMm(profile);
+  const rasterSafeHeight = profile.laserCutOutline
+    ? Math.floor(profile.maxHeight * pixelsPerMm) / pixelsPerMm
+    : profile.maxHeight;
   return {
     width: profile.laserCutOutline
       ? Math.floor(profile.maxWidth * pixelsPerMm) / pixelsPerMm
       : profile.maxWidth,
-    height: profile.laserCutOutline
-      ? Math.floor(profile.maxHeight * pixelsPerMm) / pixelsPerMm
-      : profile.maxHeight,
+    // Consolidation adds this clear margin above and below each cropped strip.
+    // Reserve it before nesting so every accepted layout can be consolidated.
+    height: rasterSafeHeight - 2 * exteriorStrokeMargin,
     minimumPieceClearance: nominalSilhouetteClearanceMm(profile),
-    outlineExtentMm: outlineExtentMm(profile),
+    outlineExtentMm: exteriorStrokeMargin,
   };
 }

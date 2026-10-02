@@ -8,6 +8,8 @@ export function drawLaserOutlines(
 ): void {
   if (!layout.laserOutline) return;
   context.save();
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = 'source-over';
   context.translate(-layout.offsetX * scale, -layout.offsetY * scale - stripY);
   context.strokeStyle = layout.laserOutline.color;
   context.lineWidth = layout.laserOutline.widthMm * scale;

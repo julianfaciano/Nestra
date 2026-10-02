@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { ExportLayout, PreflightReport } from '../export/export-plan';
 import { ImageLightbox } from './image-lightbox';
 
@@ -36,6 +37,7 @@ export function BatchExportPanel({
   exporting,
   exported,
   status,
+  error,
 }: {
   readonly report: PreflightReport;
   readonly onExport: () => void;
@@ -44,6 +46,7 @@ export function BatchExportPanel({
   readonly exporting: boolean;
   readonly exported: boolean;
   readonly status: string | null;
+  readonly error?: { readonly message: string; readonly details: string } | null;
 }) {
   const fileCount = report.layouts.length;
 
@@ -62,6 +65,19 @@ export function BatchExportPanel({
             ))}
           </ul>
         </div>
+      ) : null}
+
+      {error ? (
+        <section className="batch-export-errors" role="alert" aria-label="Error de exportación PDF">
+          <h2>No se pudieron crear los archivos PDF</h2>
+          <p>{error.message}</p>
+          {error.details ? (
+            <details>
+              <summary>Detalles técnicos</summary>
+              <pre>{error.details}</pre>
+            </details>
+          ) : null}
+        </section>
       ) : null}
 
       <div className="batch-export-primary-flow">
@@ -112,23 +128,70 @@ export function BatchExportPanel({
       ) : null}
 
       <div className="batch-export-layouts">
-        {report.layouts.map((layout) => (
-          <figure key={layout.name} className="batch-export-layout">
-            <figcaption className="batch-export-caption">
-              {layout.name} · {(layout.widthMm / 10).toFixed(2)} ×{' '}
-              {(layout.heightMm / 10).toFixed(2)} cm · {layout.widthPx} ×{' '}
-              {layout.heightPx} px
-            </figcaption>
-
-            <ImageLightbox
-              label={`Ampliar ${layout.name}`}
-              trigger={<ExportArtwork layout={layout} />}
-            >
-              <ExportArtwork layout={layout} />
-            </ImageLightbox>
-          </figure>
+        {report.layouts.map((layout, index) => (
+          <DeferredCanvasPreview key={`${layout.name}-${index}`} layout={layout} index={index} />
         ))}
       </div>
     </section>
+  );
+}
+
+function DeferredCanvasPreview({ layout, index }: { readonly layout: ExportLayout; readonly index: number }) {
+  const figureRef = useRef<HTMLElement | null>(null);
+  const [nearViewport, setNearViewport] = useState(false);
+
+  useEffect(() => {
+    const figure = figureRef.current;
+    if (!figure) return;
+
+    if (typeof IntersectionObserver !== 'undefined') {
+      const observer = new IntersectionObserver(([entry]) => {
+        setNearViewport(Boolean(entry?.isIntersecting));
+      }, { rootMargin: '700px 0px' });
+      observer.observe(figure);
+      return () => observer.disconnect();
+    }
+
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const bounds = figure.getBoundingClientRect();
+      const margin = 700;
+      setNearViewport(bounds.bottom >= -margin && bounds.top <= window.innerHeight + margin);
+    };
+    const scheduleUpdate = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(update);
+    };
+    scheduleUpdate();
+    window.addEventListener('scroll', scheduleUpdate, true);
+    window.addEventListener('resize', scheduleUpdate);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', scheduleUpdate, true);
+      window.removeEventListener('resize', scheduleUpdate);
+    };
+  }, []);
+
+  return (
+    <figure ref={figureRef} className="batch-export-layout" data-canvas-index={index}>
+      <figcaption className="batch-export-caption">
+        {layout.name} · {(layout.widthMm / 10).toFixed(2)} × {(layout.heightMm / 10).toFixed(2)} cm · {layout.widthPx} × {layout.heightPx} px
+      </figcaption>
+      <div
+        className="batch-export-preview-slot"
+        style={{ aspectRatio: `${layout.widthMm} / ${layout.heightMm}` }}
+        aria-label={`Vista previa de ${layout.name}`}
+      >
+        {nearViewport ? (
+          <ImageLightbox
+            label={`Ampliar ${layout.name}`}
+            trigger={<ExportArtwork layout={layout} />}
+          >
+            <ExportArtwork layout={layout} />
+          </ImageLightbox>
+        ) : <div className="batch-export-preview-placeholder" aria-hidden="true" />}
+      </div>
+    </figure>
   );
 }

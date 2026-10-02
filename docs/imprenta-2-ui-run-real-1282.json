@@ -1,0 +1,29 @@
+{
+  "dataset": "Real PNG-derived contours, browser Web Worker and product preflight/preview path; neutral preview thumbnails",
+  "totalPieces": 1282,
+  "logicalPieceTypes": 372,
+  "uniqueRealGeometries": 217,
+  "uniqueGeometryRotationVariants": 608,
+  "searchStrategy": "fast",
+  "chunkSize": 150,
+  "nestingElapsedMs": 203636.2,
+  "workerMs": 203476.6,
+  "workerOverheadMs": 159.2,
+  "internalCanvases": 67,
+  "finalCanvases": 24,
+  "placedPieces": 1282,
+  "exactWorkerCollisionChecks": 24709621,
+  "finalizationElapsedMs": 355.1,
+  "finalizationMaxMainThreadTaskMs": 12.4,
+  "finalizationYieldCount": 28,
+  "resultVisibleAfterFinalizationMs": 33.4,
+  "maxObservedLongTaskMs": 115,
+  "maxAnimationFrameGapMs": 116.7,
+  "uiPingCountDuringRun": 3,
+  "resultPanelExportFiles": 24,
+  "notes": [
+    "Fixture and allowed rotations were sourced from the updated 641-garment order and 217 real geometry records.",
+    "Only preview thumbnails were neutral SVG samples; nesting contours, clearance components and anchors came from the real PNG profile.",
+    "The independent exact-clearance audit is recorded separately in imprenta-2-real-production-1282-chunk150.json."
+  ]
+}

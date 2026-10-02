@@ -236,4 +236,26 @@ it('no deduplica layouts con diferente contenido', () => {
   'polar_1_copia_b.png',
 ]);
 });
+
+it('compara los contornos sin serializarlos en la clave del layout', () => {
+  const first = preflightBatch(batch()).layouts[0]!;
+  const firstPiece = first.pieces[0]!;
+  const differentContours = {
+    ...first,
+    name: 'contornos-distintos.png',
+    pieces: [
+      {
+        ...firstPiece,
+        cutComponents: [[
+          { x: 0, y: 0 },
+          { x: 1, y: 0 },
+          { x: 1, y: 1 },
+        ]],
+      },
+      ...first.pieces.slice(1),
+    ],
+  };
+
+  expect(deduplicateExportLayouts([first, differentContours])).toHaveLength(2);
+});
 });

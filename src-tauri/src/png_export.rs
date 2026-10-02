@@ -118,8 +118,8 @@ pub(crate) fn start_session(
         return Err("Nombre de archivo no válido.".into());
     }
     // floor(mm / 25.4 * 300): never advertise a raster larger than the physical maximum.
-    if width == 0 || height == 0 || width > 17480 || height > 59055 {
-        return Err("Dimensiones PNG fuera del máximo físico de 1480 × 5000 mm.".into());
+    if width == 0 || height == 0 || width > 18425 || height > 59055 {
+        return Err("Dimensiones PNG fuera del máximo físico de 1560 × 5000 mm.".into());
     }
     start_session_at(&folder.join(name), width, height, id)
 }
@@ -261,8 +261,8 @@ pub(crate) fn start_session_at(
     if !valid_destination(destination) {
         return Err("Destino PNG no válido.".into());
     }
-    if width == 0 || height == 0 || width > 17480 || height > 59055 {
-        return Err("Dimensiones PNG fuera del máximo físico de 1480 × 5000 mm.".into());
+    if width == 0 || height == 0 || width > 18425 || height > 59055 {
+        return Err("Dimensiones PNG fuera del máximo físico de 1560 × 5000 mm.".into());
     }
     if destination.exists() {
         return Err("Ya existe ese archivo. Elegí otro nombre o ubicación.".into());
@@ -539,10 +539,45 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
     #[test]
+    fn accepts_1560_mm_width_for_automatic_and_manual_legacy_raster() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!((1560_f64 * 300. / 25.4).floor() as u32, 18425);
+        for width in [17480, 18425] {
+            for automatic in [false, true] {
+                let name = format!("wide{width}{automatic}_1_copia.png");
+                let destination = dir.path().join(&name);
+                let mut session = if automatic {
+                    start_session(dir.path(), &name, width, 1, "test".into())
+                } else {
+                    start_session_at(&destination, width, 1, "test".into())
+                }
+                .unwrap();
+                let rgb = vec![255; width as usize * 3];
+                session.append(&rgb).unwrap();
+                session.finish().unwrap();
+                let mut reader =
+                    png::Decoder::new(std::io::BufReader::new(File::open(destination).unwrap()))
+                        .read_info()
+                        .unwrap();
+                assert_eq!(reader.info().color_type, png::ColorType::Rgb);
+                assert_eq!(reader.info().pixel_dims.unwrap().xppu, PPM_300);
+                let mut decoded = vec![0; reader.output_buffer_size().unwrap()];
+                let frame = reader.next_frame(&mut decoded).unwrap();
+                assert_eq!((frame.width, frame.height), (width, 1));
+                assert_eq!(decoded, rgb);
+            }
+        }
+        assert!(
+            start_session_at(&dir.path().join("overflow.png"), 18426, 1, "test".into()).is_err()
+        );
+        assert!(!dir.path().join("overflow.png").exists());
+    }
+
+    #[test]
     fn forbids_overwrite_paths_and_oversized_images() {
         let dir = tempfile::tempdir().unwrap();
         assert!(start_session(dir.path(), "../polar_1_copia.png", 2, 2, "a".into()).is_err());
-        assert!(start_session(dir.path(), "polar_1_copia.png", 17481, 2, "a".into()).is_err());
+        assert!(start_session(dir.path(), "polar_1_copia.png", 18426, 2, "a".into()).is_err());
         assert!(start_session(dir.path(), "polar_1_copia.png", 2, 59056, "a".into()).is_err());
         std::fs::write(dir.path().join("polar_1_copia.png"), b"original").unwrap();
         assert!(start_session(dir.path(), "polar_1_copia.png", 2, 2, "a".into()).is_err());

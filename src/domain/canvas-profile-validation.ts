@@ -2,7 +2,7 @@ import {
   canvasProfileHeightLimit,
   nominalSilhouetteClearanceMm,
   outlineExtentMm,
-  HARD_MAX_CANVAS_WIDTH,
+  canvasProfileWidthLimit,
   type CanvasProfile,
 } from './canvas-profile';
 
@@ -42,10 +42,10 @@ export function validateCanvasProfile(
       field: 'maxWidth',
       message: 'El ancho máximo debe ser mayor que cero.',
     });
-  } else if (profile.maxWidth > HARD_MAX_CANVAS_WIDTH) {
+  } else if (profile.maxWidth > canvasProfileWidthLimit(profile)) {
     errors.push({
       field: 'maxWidth',
-      message: 'El ancho máximo no puede superar 1480 mm.',
+      message: `El ancho máximo no puede superar ${canvasProfileWidthLimit(profile)} mm.`,
     });
   }
 

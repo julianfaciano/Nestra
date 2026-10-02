@@ -15,8 +15,12 @@ import {
   type NestingWorkerTiming,
 } from '../geometry/nesting-client';
 import {
-  preflightBatch,
+  certifyPreparedBatchGeometry,
+  exportLayoutPhysicalCopyCount,
+  preflightBatchCooperatively,
+  type ExportLayout,
   type PreparedBatch,
+  type PreflightReport,
   type FabricBatchResult,
 } from '../export/export-plan';
 import { MAX_SOURCE_PIXELS } from '../export/png-export';
@@ -260,6 +264,7 @@ const PROFILE_LABELS: Record<ProfileBlock, string> = {
   neighborLookup: 'Cell keys / buckets / deduplicación',
   boundsOverlap: 'boundsOverlapWithArea',
   polygonsOverlap: 'polygonsOverlap total',
+  clearance: 'Clearance exacto entre contornos',
 };
 const COUNTER_LABELS: Record<keyof NestingProfile['counters'], string> = {
   coordinateSets: 'Sets X/Y construidos',
@@ -327,31 +332,45 @@ async function polygonsFromDefinition(
   definition: BatchPieceDefinition,
   file: File,
   includeCutContours = false,
+  inMemoryCache?: Map<string, PolygonPair>,
 ): Promise<PolygonPair> {
   let cacheKey: string | undefined;
 
   try {
-    if (definition.kind !== 'free-png')
-      cacheKey = await buildContourCacheKey(file, {
-        alphaThreshold: definition.alphaThreshold,
-        fastSimplificationPx: FAST_SIMPLIFICATION_PX,
-        fineSimplificationPx: FINE_SIMPLIFICATION_PX,
-        physicalWidthMm: definition.physicalWidthMm,
-        physicalHeightMm: definition.physicalHeightMm,
-        ...(definition.kind === 'replacement-piece' ? { geometryMode: 'all-visible-replacement' as const } : {}),
-      });
-
-    const cached = cacheKey ? await loadCachedContourPair(cacheKey) : undefined;
-
-    if (cached && !includeCutContours) {
-      return cached;
-    }
+    cacheKey = await buildContourCacheKey(file, {
+      alphaThreshold: definition.alphaThreshold,
+      fastSimplificationPx: FAST_SIMPLIFICATION_PX,
+      fineSimplificationPx: FINE_SIMPLIFICATION_PX,
+      physicalWidthMm: definition.physicalWidthMm,
+      physicalHeightMm: definition.physicalHeightMm,
+      ...(definition.kind === 'replacement-piece' ? { geometryMode: 'all-visible-replacement' as const } : {}),
+      ...(definition.kind === 'free-png' ? { geometryMode: 'all-visible-free-png' as const } : {}),
+    });
   } catch {
     /*
      * El caché es una optimización, no una dependencia.
      * Si IndexedDB o SHA-256 fallan, calculamos normalmente.
      */
     cacheKey = undefined;
+  }
+
+  let memoryCacheKey = cacheKey ? `${cacheKey}|cut:${includeCutContours ? 'yes' : 'no'}` : undefined;
+  const remember = (result: PolygonPair): PolygonPair => {
+    if (memoryCacheKey) inMemoryCache?.set(memoryCacheKey, result);
+    return result;
+  };
+  if (memoryCacheKey) {
+    const cachedInMemory = inMemoryCache?.get(memoryCacheKey);
+    if (cachedInMemory) return cachedInMemory;
+  }
+
+  try {
+    const cached = cacheKey ? await loadCachedContourPair(cacheKey) : undefined;
+    if (cached && !includeCutContours) return remember(cached);
+  } catch {
+    // The persistent cache is optional. The source raster remains authoritative.
+    cacheKey = undefined;
+    memoryCacheKey = undefined;
   }
 
   const image = await createImageBitmap(file);
@@ -406,14 +425,14 @@ async function polygonsFromDefinition(
           `No se pudo detectar la silueta de ${definition.fileName}.`,
         );
       const envelope = componentEnvelope(collisionComponents);
-      return {
+      return remember({
         fastPolygon: envelope,
         finePolygon: envelope,
         collisionComponents,
         ...(includeCutContours ? {cutComponents: collisionComponents} : {}),
         sourceAlphaBounds,
         sourcePlacementBounds: sourceAlphaBounds,
-      };
+      });
     }
 
     const fastContour = extractLargestAlphaPolygon(
@@ -481,7 +500,7 @@ async function polygonsFromDefinition(
       }
     }
 
-    return result;
+    return remember(result);
   } finally {
     sourceCanvas.width = 0;
     sourceCanvas.height = 0;
@@ -527,6 +546,7 @@ function validateDraft(draft: ProductionPieceDraft): string | null {
 }
 
 interface OptimizationDiagnostics {
+  readonly searchStrategy: 'fast' | 'material';
   readonly profileName: string;
   readonly profileWidthMm: number;
   readonly profileHeightMm: number;
@@ -558,6 +578,39 @@ interface OptimizationDiagnostics {
   readonly exactPolygonCollisionChecks: number;
   readonly layoutsCreated: number;
   readonly candidateCacheHits: number;
+  readonly uniqueGeometries: number;
+  readonly uniqueGeometryRotationVariants: number;
+  readonly geometryReferenceCacheHits: number;
+  readonly requiredCandidateBudgetStops: number;
+  readonly clearanceIndexedCalls: number;
+  readonly clearanceSegmentCandidates: number;
+  readonly clearanceSegmentExactChecks: number;
+  readonly preflightElapsedMs: number;
+  readonly preflightMaxMainThreadTaskMs: number;
+  readonly preflightYieldCount: number;
+  readonly preflightCandidatePairs: number;
+  readonly preflightBroadPhaseSkippedPairs: number;
+  readonly preflightExactCollisionChecks: number;
+  readonly preflightExactClearanceChecks: number;
+  readonly internalCanvasCount: number;
+  readonly finalCanvasCount: number;
+  readonly exportedFileCount: number;
+  readonly internalUsedHeightMm: number;
+  readonly finalUsedHeightMm: number;
+  readonly interStripVisibleGapMm: number;
+  readonly exteriorStrokeMarginMm: number;
+}
+
+function errorStackDetails(error: unknown): string {
+  const stacks: string[] = [];
+  const visited = new Set<Error>();
+  let current: unknown = error;
+  while (current instanceof Error && !visited.has(current)) {
+    visited.add(current);
+    stacks.push(current.stack ?? `${current.name}: ${current.message}`);
+    current = current.cause;
+  }
+  return stacks.length > 0 ? stacks.join('\n\nCausa original:\n') : String(error);
 }
 
 type ReplacementFeedback = {
@@ -683,8 +736,10 @@ export function BatchPage({
     readonly SizeTemplateDraft[] | null
   >(null);
   const [mode, setMode] = useState<CanvasProfileKind>('imprenta');
+  const [imprenta2Optimization, setImprenta2Optimization] = useState<'fast' | 'material'>('fast');
   const [isExporting, setIsExporting] = useState(false);
   const [exportSucceeded, setExportSucceeded] = useState(false);
+  const [exportError, setExportError] = useState<{ message: string; details: string } | null>(null);
   const [exportActivity, setExportActivity] =
     useState<BatchExportSummary>(IDLE_EXPORT);
   const [isResultStale, setIsResultStale] = useState(false);
@@ -701,24 +756,16 @@ export function BatchPage({
 
   const [exportDiagnostics, setExportDiagnostics] =
     useState<PngExportDiagnostics | null>(null);
-  const report = useMemo(() => {
-    const startedAt = performance.now();
-
-    const nextReport = prepared
-      ? usedTemplates === templates
-        ? preflightBatch(prepared)
-          : {
-            errors: ['Cambió la calibración. Volvé a optimizar el batch.'],
-            warnings: [],
-            layouts: [],
-            boundsIssues: [],
-          }
-      : null;
-
-    preflightElapsedMs.current = performance.now() - startedAt;
-
-    return nextReport;
-  }, [prepared, templates, usedTemplates]);
+  const [report, setReport] = useState<PreflightReport | null>(null);
+  const finalLayoutsByFabric = useMemo(() => {
+    const grouped = new Map<string, ExportLayout[]>();
+    for (const layout of report?.layouts ?? []) {
+      const current = grouped.get(layout.fabric) ?? [];
+      current.push(layout);
+      grouped.set(layout.fabric, current);
+    }
+    return grouped;
+  }, [report]);
   const profile =
     CANVAS_PROFILES.find(p => p.kind === mode) ?? DEFAULT_IMPRENTA_PROFILE;
   const hasOptimizationResult =
@@ -826,6 +873,8 @@ export function BatchPage({
     }
     setOptimizationDiagnostics(null);
     setExportDiagnostics(null);
+    setReport(null);
+    preflightElapsedMs.current = 0;
     setStatus(null);
     setOptimization(IDLE_OPTIMIZATION);
   }
@@ -1124,9 +1173,18 @@ export function BatchPage({
 
     const collectionPreparationMs =
       diagnosticContext.collectionPreparationMs;
+    let quickIncumbent: {
+      readonly prepared: PreparedBatch;
+      readonly results: FabricBatchResult[];
+      readonly report: PreflightReport;
+      readonly runId: string;
+      readonly diagnostics: OptimizationDiagnostics;
+    } | undefined;
 
     setOptimizationDiagnostics(null);
     setExportDiagnostics(null);
+    setReport(null);
+    preflightElapsedMs.current = 0;
     setStatus(null);
     optimizationRunIdRef.current = null;
     setIsResultStale(hasOptimizationResult);
@@ -1238,7 +1296,9 @@ export function BatchPage({
       >();
 
       const cutComponentsByDefinitionId = new Map<string, readonly Polygon[]>();
+      const cutAnchorByDefinitionId = new Map<string, Polygon>();
       const sourceFileByDefinitionId = new Map<string, File>();
+      const contourCache = new Map<string, PolygonPair>();
 
       for (const piece of allInputPieces) {
         if (!piece.file) {
@@ -1265,9 +1325,20 @@ export function BatchPage({
           sourceAlphaBounds,
           sourcePlacementBounds,
         } =
-          await polygonsFromDefinition(definition, file, Boolean(profile.laserCutOutline));
+          await polygonsFromDefinition(definition, file, Boolean(profile.laserCutOutline), contourCache);
 
-        if (cutComponents) cutComponentsByDefinitionId.set(definition.id, cutComponents);
+        if (cutComponents) {
+          cutComponentsByDefinitionId.set(definition.id, cutComponents);
+          const bounds = sourcePlacementBounds;
+          const sx = definition.physicalWidthMm / definition.sourceWidthPx;
+          const sy = definition.physicalHeightMm / definition.sourceHeightPx;
+          cutAnchorByDefinitionId.set(definition.id, [
+            { x: bounds.x * sx, y: bounds.y * sy },
+            { x: (bounds.x + bounds.width) * sx, y: bounds.y * sy },
+            { x: (bounds.x + bounds.width) * sx, y: (bounds.y + bounds.height) * sy },
+            { x: bounds.x * sx, y: (bounds.y + bounds.height) * sy },
+          ]);
+        }
         polygonByDefinitionId.set(definition.id, fastPolygon);
 
         finePolygonByDefinitionId.set(definition.id, finePolygon);
@@ -1290,233 +1361,301 @@ export function BatchPage({
       const groupingMs = performance.now() - groupingStartedAt;
       updateOptimizationProgress(5, 'Acomodando piezas');
 
-      const nextResults: FabricBatchResult[] = [];
-      const engineProfiles: { fabric: string; profile: NestingProfile }[] = [];
-      let nestingRoundTripMs = 0;
-      let nestingWorkerMs = 0;
-      let nestingOverheadMs = 0;
-      let requiredMs = 0;
-      let fillerMs = 0;
-
-      let candidatePlacementsTested = 0;
-      let polygonTransforms = 0;
-      let polygonTranslations = 0;
-      let broadPhaseChecks = 0;
-      let exactPolygonCollisionChecks = 0;
-      let layoutsCreated = 0;
-      let candidateCacheHits = 0;
-
-      let completedRequiredBeforeGroup = 0;
       const totalRequiredPieces = instances.length;
+      const executeSearchPass = async (searchStrategy: 'fast' | 'material', passIndex: number, passCount: number) => {
+        const nextResults: FabricBatchResult[] = [];
+        const engineProfiles: { fabric: string; profile: NestingProfile }[] = [];
+        let nestingRoundTripMs = 0;
+        let nestingWorkerMs = 0;
+        let nestingOverheadMs = 0;
+        let requiredMs = 0;
+        let fillerMs = 0;
+        let candidatePlacementsTested = 0;
+        let polygonTransforms = 0;
+        let polygonTranslations = 0;
+        let broadPhaseChecks = 0;
+        let exactPolygonCollisionChecks = 0;
+        let layoutsCreated = 0;
+        let candidateCacheHits = 0;
+        let uniqueGeometries = 0;
+        let uniqueGeometryRotationVariants = 0;
+        let geometryReferenceCacheHits = 0;
+        let requiredCandidateBudgetStops = 0;
+        let clearanceIndexedCalls = 0;
+        let clearanceSegmentCandidates = 0;
+        let clearanceSegmentExactChecks = 0;
+        let completedRequiredBeforeGroup = 0;
+        const passStartedAt = performance.now();
+        const passBase = passCount === 2 ? passIndex === 0 ? 5 : 50 : 5;
+        const passSpan = passCount === 2 ? passIndex === 0 ? 43 : 44 : 90;
+        const strategyLabel = searchStrategy === 'fast' ? 'Optimización rápida' : 'Exprimir material';
 
-      for (const group of fabricGroups) {
-        const fillers = fillersForInstances(group.pieces);
-        const nestingPieces: MultiNestingPiece[] = group.pieces.map(
-          (instance: PieceInstance) => {
-            const polygon = polygonByDefinitionId.get(instance.definitionId);
-            const finePolygon = finePolygonByDefinitionId.get(
-              instance.definitionId,
-            );
-            const collisionComponents = componentsByDefinitionId.get(
-              instance.definitionId,
-            );
+        for (const group of fabricGroups) {
+          const fillers = fillersForInstances(group.pieces);
+          const nestingPieces: MultiNestingPiece[] = group.pieces.map(
+            (instance: PieceInstance) => {
+              const polygon = polygonByDefinitionId.get(instance.definitionId);
+              const finePolygon = finePolygonByDefinitionId.get(instance.definitionId);
+              const collisionComponents = componentsByDefinitionId.get(instance.definitionId);
+              if (!polygon || !finePolygon) throw new Error(`No se encontró la geometría de ${instance.id}.`);
+              return {
+                ...(fillers.length ? { artworkSize: {
+                  width: instance.definition.physicalWidthMm,
+                  height: instance.definition.physicalHeightMm,
+                } } : {}),
+                ...(cutComponentsByDefinitionId.has(instance.definitionId) ? {
+                  cutComponents: cutComponentsByDefinitionId.get(instance.definitionId)!,
+                  cutAnchor: cutAnchorByDefinitionId.get(instance.definitionId)!,
+                } : {}),
+                id: instance.id,
+                kind: instance.definition.kind === 'free-png' ? 'free-png' : 'garment',
+                polygon,
+                finePolygon,
+                ...(collisionComponents ? { collisionComponents } : {}),
+                allowedRotations: getAllowedRotationsForPiece(instance.definition),
+              };
+            },
+          );
 
-            if (!polygon || !finePolygon) {
-              throw new Error(`No se encontró la geometría de ${instance.id}.`);
+          let workerTiming: NestingWorkerTiming | undefined;
+          const groupProgressStart = passBase + passSpan * completedRequiredBeforeGroup / totalRequiredPieces;
+          const groupProgressSpan = passSpan * group.pieces.length / totalRequiredPieces;
+          const requiredProgressSpan = fillers.length ? groupProgressSpan * (70 / 90) : groupProgressSpan;
+          const fillerProgressSpan = groupProgressSpan - requiredProgressSpan;
+          const reportWorkerProgress = (progress: NestingProgress) => {
+            const completed = Math.min(totalRequiredPieces, completedRequiredBeforeGroup +
+              (progress.phase === 'required' ? progress.completed : group.pieces.length));
+            const label = `${strategyLabel} · ${completed} / ${totalRequiredPieces} piezas`;
+            if (progress.phase === 'preparing') {
+              updateOptimizationProgress(groupProgressStart, `${strategyLabel} · preparando`);
+            } else if (progress.phase === 'required') {
+              updateOptimizationProgress(groupProgressStart + requiredProgressSpan * progress.completed / progress.total, label);
+            } else if (progress.phase === 'fillers') {
+              updateOptimizationProgress(groupProgressStart + requiredProgressSpan + fillerProgressSpan * progress.completed / progress.total,
+                `Completando espacios · ${completed} / ${totalRequiredPieces} piezas`);
+            } else {
+              updateOptimizationProgress(groupProgressStart + groupProgressSpan, `Validando · ${completed} / ${totalRequiredPieces} piezas`);
             }
+          };
 
-            return {
-              ...(fillers.length
-                ? {
-                    artworkSize: {
-                      width: instance.definition.physicalWidthMm,
-                      height: instance.definition.physicalHeightMm,
-                    },
-                  }
-                : {}),
-              ...(cutComponentsByDefinitionId.has(instance.definitionId) ? {
-                cutComponents: cutComponentsByDefinitionId.get(instance.definitionId)!,
-                cutAnchor: (() => {
-                  const b = sourcePlacementBoundsByDefinitionId.get(instance.definitionId)!;
-                  const sx=instance.definition.physicalWidthMm/instance.definition.sourceWidthPx;
-                  const sy=instance.definition.physicalHeightMm/instance.definition.sourceHeightPx;
-                  return [{x:b.x*sx,y:b.y*sy},{x:(b.x+b.width)*sx,y:b.y*sy},
-                    {x:(b.x+b.width)*sx,y:(b.y+b.height)*sy},{x:b.x*sx,y:(b.y+b.height)*sy}];
-                })(),
-              } : {}),
-              id: instance.id,
-              kind: instance.definition.kind === 'free-png' ? 'free-png' : 'garment',
-              polygon,
-              finePolygon,
-              ...(collisionComponents ? { collisionComponents } : {}),
-              allowedRotations: getAllowedRotationsForPiece(
-                instance.definition,
-              ),
-            };
-          },
-        );
-
-        let workerTiming: NestingWorkerTiming | undefined;
-        const groupProgressStart =
-          5 + (90 * completedRequiredBeforeGroup) / totalRequiredPieces;
-        const groupProgressSpan =
-          (90 * group.pieces.length) / totalRequiredPieces;
-        const requiredProgressSpan = fillers.length
-          ? groupProgressSpan * (70 / 90)
-          : groupProgressSpan;
-        const fillerProgressSpan = groupProgressSpan - requiredProgressSpan;
-        const reportWorkerProgress = (progress: NestingProgress) => {
-          if (progress.phase === 'preparing') {
-            updateOptimizationProgress(
-              groupProgressStart,
-              'Acomodando piezas',
-            );
-          } else if (progress.phase === 'required') {
-            updateOptimizationProgress(
-              groupProgressStart +
-                requiredProgressSpan * (progress.completed / progress.total),
-              'Acomodando piezas',
-            );
-          } else if (progress.phase === 'fillers') {
-            updateOptimizationProgress(
-              groupProgressStart +
-                requiredProgressSpan +
-                fillerProgressSpan * (progress.completed / progress.total),
-              'Completando espacios',
-            );
-          } else {
-            updateOptimizationProgress(
-              groupProgressStart + groupProgressSpan,
-              'Validando',
-            );
+          const startedAt = performance.now();
+          const result = await nestInWorker(
+            {
+              pieces: nestingPieces,
+              searchStrategy,
+              diagnosticPhaseTiming: true,
+              ...(fillers.length ? { fillers } : {}),
+              canvas: nestingCanvasForProfile(profile),
+              scanStepMm: DEFAULT_SCAN_STEP_MM,
+            },
+            controller.signal,
+            timing => { workerTiming = timing; },
+            reportWorkerProgress,
+          );
+          completedRequiredBeforeGroup += group.pieces.length;
+          const elapsedMs = performance.now() - startedAt;
+          if (workerTiming) {
+            nestingRoundTripMs += workerTiming.roundTripMs;
+            nestingWorkerMs += workerTiming.workerMs;
+            nestingOverheadMs += workerTiming.overheadMs;
           }
+          const engineDiagnostics = result.diagnostics;
+          if (engineDiagnostics?.profile) engineProfiles.push({ fabric: group.fabric, profile: engineDiagnostics.profile });
+          if (engineDiagnostics) {
+            requiredMs += engineDiagnostics.requiredMs;
+            fillerMs += engineDiagnostics.fillerMs;
+            candidatePlacementsTested += engineDiagnostics.candidatePlacementsTested;
+            polygonTransforms += engineDiagnostics.polygonTransforms;
+            polygonTranslations += engineDiagnostics.polygonTranslations;
+            broadPhaseChecks += engineDiagnostics.broadPhaseChecks;
+            exactPolygonCollisionChecks += engineDiagnostics.exactPolygonCollisionChecks;
+            layoutsCreated += engineDiagnostics.layoutsCreated;
+            candidateCacheHits += engineDiagnostics.candidateCacheHits;
+            uniqueGeometries += engineDiagnostics.uniqueGeometryCount;
+            uniqueGeometryRotationVariants += engineDiagnostics.uniqueGeometryRotationVariants;
+            geometryReferenceCacheHits += engineDiagnostics.geometryReferenceCacheHits;
+            requiredCandidateBudgetStops += engineDiagnostics.requiredCandidateBudgetStops;
+            clearanceIndexedCalls += engineDiagnostics.clearanceIndexedCalls;
+            clearanceSegmentCandidates += engineDiagnostics.clearanceSegmentCandidates;
+            clearanceSegmentExactChecks += engineDiagnostics.clearanceSegmentExactChecks;
+          }
+          nextResults.push({ fabric: group.fabric, layouts: result.layouts, unplacedPieceIds: result.unplacedPieceIds, elapsedMs });
+        }
+
+        const nextPrepared: PreparedBatch = {
+          definitions,
+          polygons: polygonByDefinitionId,
+          collisionPolygons: finePolygonByDefinitionId,
+          cutComponents: cutComponentsByDefinitionId,
+          sourceAlphaBounds: sourceAlphaBoundsByDefinitionId,
+          sourcePlacementBounds: sourcePlacementBoundsByDefinitionId,
+          results: nextResults,
+          profile,
         };
-
-        const startedAt = performance.now();
-
-        const result = await nestInWorker(
-          {
-            pieces: nestingPieces,
-            diagnosticPhaseTiming: true,
-            ...(fillers.length ? { fillers } : {}),
-            canvas: nestingCanvasForProfile(profile),
-            scanStepMm: DEFAULT_SCAN_STEP_MM,
-          },
+        certifyPreparedBatchGeometry(nextPrepared);
+        const diagnostics: OptimizationDiagnostics = {
+          searchStrategy,
+          profileName: profile.name,
+          profileWidthMm: profile.maxWidth,
+          profileHeightMm: profile.maxHeight,
+          engineProfiles,
+          collectionPreparationMs,
+          definitionBuildMs,
+          contourExtractionMs,
+          groupingMs,
+          nestingRoundTripMs,
+          nestingWorkerMs,
+          nestingOverheadMs,
+          requiredMs,
+          fillerMs,
+          totalBeforePreflightMs: performance.now() - runStartedAt,
+          definitions: definitions.length,
+          expandedPieces: instances.length,
+          fabricGroups: fabricGroups.length,
+          candidatePlacementsTested,
+          polygonTransforms,
+          polygonTranslations,
+          broadPhaseChecks,
+          exactPolygonCollisionChecks,
+          layoutsCreated,
+          candidateCacheHits,
+          uniqueGeometries,
+          uniqueGeometryRotationVariants,
+          geometryReferenceCacheHits,
+          requiredCandidateBudgetStops,
+          clearanceIndexedCalls,
+          clearanceSegmentCandidates,
+          clearanceSegmentExactChecks,
+          preflightElapsedMs: 0,
+          preflightMaxMainThreadTaskMs: 0,
+          preflightYieldCount: 0,
+          preflightCandidatePairs: 0,
+          preflightBroadPhaseSkippedPairs: 0,
+          preflightExactCollisionChecks: 0,
+          preflightExactClearanceChecks: 0,
+          internalCanvasCount: nextResults.reduce((total, result) => total + result.layouts.length, 0),
+          finalCanvasCount: 0,
+          exportedFileCount: 0,
+          internalUsedHeightMm: nextResults.reduce((total, result) => total + result.layouts.reduce((sum, layout) => sum + layout.usedHeight, 0), 0),
+          finalUsedHeightMm: 0,
+          interStripVisibleGapMm: 0,
+          exteriorStrokeMarginMm: 0,
+        };
+        const finalizationBase = passCount === 1 ? 95 : passIndex === 0 ? 48 : 94;
+        const finalizationSpan = passCount === 1 ? 4 : passIndex === 0 ? 1 : 5;
+        const preflight = await preflightBatchCooperatively(
+          nextPrepared,
           controller.signal,
-          (timing) => {
-            workerTiming = timing;
+          progress => {
+            const stageIndex = progress.phase === 'validation' ? 0 : 1;
+            const stageStart = finalizationBase + finalizationSpan * stageIndex / 2;
+            const stageSpan = finalizationSpan / 2;
+            const phaseLabel = progress.phase === 'validation' ? 'Preparando resultado' : 'Consolidando canvases';
+            updateOptimizationProgress(
+              stageStart + stageSpan * progress.completedPlacements / Math.max(1, progress.totalPlacements),
+              `${phaseLabel} · ${progress.completedPlacements} / ${progress.totalPlacements} piezas`,
+            );
           },
-          reportWorkerProgress,
         );
-        completedRequiredBeforeGroup += group.pieces.length;
+        preflightElapsedMs.current = preflight.elapsedMs;
+        const preflightDiagnostics = preflight.report.diagnostics;
+        return {
+          prepared: nextPrepared,
+          results: nextResults,
+          report: preflight.report,
+          diagnostics: {
+            ...diagnostics,
+            preflightElapsedMs: preflight.elapsedMs,
+            preflightMaxMainThreadTaskMs: preflight.maxMainThreadTaskMs,
+            preflightYieldCount: preflight.yieldCount,
+            preflightCandidatePairs: preflightDiagnostics?.candidatePairs ?? 0,
+            preflightBroadPhaseSkippedPairs: preflightDiagnostics?.broadPhaseSkippedPairs ?? 0,
+            preflightExactCollisionChecks: preflightDiagnostics?.exactCollisionChecks ?? 0,
+            preflightExactClearanceChecks: preflightDiagnostics?.exactClearanceChecks ?? 0,
+            internalCanvasCount: preflightDiagnostics?.internalCanvasCount ?? diagnostics.internalCanvasCount,
+            finalCanvasCount: preflightDiagnostics?.packedCanvasCount ?? 0,
+            exportedFileCount: preflightDiagnostics?.exportedFileCount ?? 0,
+            internalUsedHeightMm: preflightDiagnostics?.usedHeightBeforeMm ?? diagnostics.internalUsedHeightMm,
+            finalUsedHeightMm: preflightDiagnostics?.usedHeightAfterMm ?? 0,
+            interStripVisibleGapMm: preflightDiagnostics?.interStripVisibleGapMm ?? 0,
+            exteriorStrokeMarginMm: preflightDiagnostics?.exteriorStrokeMarginMm ?? 0,
+          },
+          elapsedMs: performance.now() - passStartedAt,
+        };
+      };
 
-        const elapsedMs = performance.now() - startedAt;
-        if (workerTiming) {
-          nestingRoundTripMs += workerTiming.roundTripMs;
+      const twoPassSearch = mode === 'imprenta-2' && imprenta2Optimization === 'material';
+      const strategies: readonly ('fast' | 'material')[] = mode === 'imprenta-2'
+        ? twoPassSearch ? ['fast', 'material'] : ['fast']
+        : ['material'];
+      let bestOutcome: Awaited<ReturnType<typeof executeSearchPass>> | undefined;
+      const outcomeQuality = (outcome: Awaited<ReturnType<typeof executeSearchPass>>) => {
+        const layouts = outcome.report.layouts;
+        return [
+          outcome.report.diagnostics?.packedCanvasCount ?? layouts.reduce((sum, layout) => sum + exportLayoutPhysicalCopyCount(layout), 0),
+          outcome.report.diagnostics?.usedHeightAfterMm ?? layouts.reduce((sum, layout) => sum + layout.heightMm * exportLayoutPhysicalCopyCount(layout), 0),
+        ];
+      };
+      const isBetterOutcome = (candidate: Awaited<ReturnType<typeof executeSearchPass>>, incumbent: Awaited<ReturnType<typeof executeSearchPass>>) => {
+        const left = outcomeQuality(candidate);
+        const right = outcomeQuality(incumbent);
+        return left[0]! < right[0]! || (left[0] === right[0] && left[1]! < right[1]! - 1e-9);
+      };
 
-          nestingWorkerMs += workerTiming.workerMs;
-
-          nestingOverheadMs += workerTiming.overheadMs;
+      for (const [passIndex, searchStrategy] of strategies.entries()) {
+        const outcome = await executeSearchPass(searchStrategy, passIndex, strategies.length);
+        if (!bestOutcome || isBetterOutcome(outcome, bestOutcome)) bestOutcome = outcome;
+        if (twoPassSearch && passIndex === 0) {
+          const runId = crypto.randomUUID();
+          quickIncumbent = { ...outcome, runId };
+          optimizationRunIdRef.current = runId;
+          setPrepared(outcome.prepared);
+          setUsedTemplates(templates);
+          setResults(outcome.results);
+          setReport(outcome.report);
+          setIsResultStale(false);
+          setOptimizationDiagnostics(outcome.diagnostics);
+          setStatus(null);
+          setOptimization(current => ({ ...current, progress: Math.max(current.progress, 49),
+            phase: 'Exprimir material · layout rápido completo', resultAvailable: true }));
         }
-
-        const engineDiagnostics = result.diagnostics;
-        if (engineDiagnostics?.profile)
-          engineProfiles.push({
-            fabric: group.fabric,
-            profile: engineDiagnostics.profile,
-          });
-
-        if (engineDiagnostics) {
-          requiredMs += engineDiagnostics.requiredMs;
-          fillerMs += engineDiagnostics.fillerMs;
-
-          candidatePlacementsTested +=
-            engineDiagnostics.candidatePlacementsTested;
-
-          polygonTransforms += engineDiagnostics.polygonTransforms;
-
-          polygonTranslations += engineDiagnostics.polygonTranslations;
-
-          broadPhaseChecks += engineDiagnostics.broadPhaseChecks;
-
-          exactPolygonCollisionChecks +=
-            engineDiagnostics.exactPolygonCollisionChecks;
-
-          layoutsCreated += engineDiagnostics.layoutsCreated;
-
-          candidateCacheHits += engineDiagnostics.candidateCacheHits;
-        }
-
-        nextResults.push({
-          fabric: group.fabric,
-          layouts: result.layouts,
-          unplacedPieceIds: result.unplacedPieceIds,
-          elapsedMs,
-        });
       }
 
       controller.signal.throwIfAborted();
-      updateOptimizationProgress(96, 'Validando');
-      const nextPrepared: PreparedBatch = {
-        definitions,
-        polygons: polygonByDefinitionId,
-        collisionPolygons: finePolygonByDefinitionId,
-        cutComponents: cutComponentsByDefinitionId,
-        sourceAlphaBounds: sourceAlphaBoundsByDefinitionId,
-        sourcePlacementBounds: sourcePlacementBoundsByDefinitionId,
-        results: nextResults,
-        profile,
-      };
-
-      optimizationRunIdRef.current = crypto.randomUUID();
-
-      setPrepared(nextPrepared);
+      if (!bestOutcome) throw new Error('La optimización no produjo resultados.');
+      const finalRunId = crypto.randomUUID();
+      optimizationRunIdRef.current = finalRunId;
+      setPrepared(bestOutcome.prepared);
       setUsedTemplates(templates);
-      setResults(nextResults);
+      setResults(bestOutcome.results);
+      setReport(bestOutcome.report);
       setIsResultStale(false);
       setStatus(null);
-      setOptimizationDiagnostics({
-        profileName: profile.name,
-        profileWidthMm: profile.maxWidth,
-        profileHeightMm: profile.maxHeight,
-        engineProfiles,
-        collectionPreparationMs,
-        definitionBuildMs,
-        contourExtractionMs,
-        groupingMs,
-
-        nestingRoundTripMs,
-        nestingWorkerMs,
-        nestingOverheadMs,
-        requiredMs,
-        fillerMs,
-
-        totalBeforePreflightMs: performance.now() - runStartedAt,
-
-        definitions: definitions.length,
-        expandedPieces: instances.length,
-        fabricGroups: fabricGroups.length,
-
-        candidatePlacementsTested,
-        polygonTransforms,
-        polygonTranslations,
-        broadPhaseChecks,
-        exactPolygonCollisionChecks,
-        layoutsCreated,
-        candidateCacheHits,
-      });
+      setOptimizationDiagnostics(bestOutcome.diagnostics);
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
           : 'Ocurrió un error al optimizar el batch.';
       const cancelled = controller.signal.aborted;
-      setStatus(message);
-      setOptimization((current) => ({
+      let keepQuick = false;
+      if (cancelled && quickIncumbent && optimizationRunIdRef.current === quickIncumbent.runId) {
+        setPrepared(quickIncumbent.prepared);
+        setUsedTemplates(templates);
+        setResults(quickIncumbent.results);
+        setReport(quickIncumbent.report);
+        setIsResultStale(false);
+        setOptimizationDiagnostics(quickIncumbent.diagnostics);
+        setStatus('Se canceló la búsqueda exhaustiva. Se conserva el layout rápido completo.');
+        keepQuick = true;
+      } else {
+        setStatus(message);
+      }
+      setOptimization(current => ({
         status: cancelled ? 'cancelled' : 'error',
         progress: current.progress,
-        phase: cancelled ? 'Cancelado' : 'Error',
-        resultAvailable: false,
+        phase: keepQuick ? 'Cancelado · layout rápido conservado' : cancelled ? 'Cancelado' : 'Error',
+        resultAvailable: Boolean(keepQuick),
         ...(cancelled ? {} : { error: message }),
       }));
     } finally {
@@ -1550,7 +1689,6 @@ export function BatchPage({
     });
 
     const generatedPieces: BatchPieceDraft[] = [];
-
     try {
       for (const collection of garmentCollections) {
         for (const size of GARMENT_SIZES) {
@@ -1658,7 +1796,8 @@ export function BatchPage({
   }
 
   async function exportPdf(): Promise<void> {
-    if (!prepared || !optimizationReady || isExporting || isOptimizing) {
+    const preflightReport = report;
+    if (!prepared || !preflightReport || !optimizationReady || isExporting || isOptimizing) {
       return;
     }
 
@@ -1669,6 +1808,7 @@ export function BatchPage({
     }
 
     setExportSucceeded(false);
+    setExportError(null);
     setIsExporting(true);
     setStatus('Preparando exportación PDF…');
     setExportActivity({
@@ -1685,6 +1825,7 @@ export function BatchPage({
         prepared,
         controller.signal,
         setStatus,
+        preflightReport,
       );
 
       if (paths.length > 0) {
@@ -1700,7 +1841,7 @@ export function BatchPage({
           phase: 'Exportación terminada',
         });
 
-        const historyReport = preflightBatch(prepared);
+        const historyReport = preflightReport;
         if (optimizationRunIdRef.current && historyReport.errors.length === 0) {
           const previewFiles = await buildHistoricalBatchPreviewFiles(
             historyReport.layouts,
@@ -1710,17 +1851,12 @@ export function BatchPage({
           recordOptimizedBatch({
             optimizationRunId: optimizationRunIdRef.current,
             createdAt: Date.now(),
-            canvasCount: prepared.results.reduce(
-              (total, result) => total + result.layouts.length,
-              0,
-            ),
+            canvasCount: historyReport.layouts.reduce((total, layout) => total + exportLayoutPhysicalCopyCount(layout), 0),
             fabrics: prepared.results.map((result) => ({
               fabric: result.fabric,
-              meters:
-                result.layouts.reduce(
-                  (total, layout) => total + layout.usedHeight,
-                  0,
-                ) / 1000,
+              meters: historyReport.layouts
+                .filter(layout => layout.fabric === result.fabric)
+                .reduce((total, layout) => total + layout.heightMm * exportLayoutPhysicalCopyCount(layout), 0) / 1000,
             })),
             files: previewFiles,
             sizeSummary: buildHistoricalSizeSummary(prepared.definitions),
@@ -1748,6 +1884,7 @@ export function BatchPage({
       const message = error instanceof Error ? error.message : String(error);
       const cancelled = controller.signal.aborted;
       setStatus(message);
+      if (!cancelled) setExportError({ message, details: errorStackDetails(error) });
       setExportActivity({
         status: cancelled ? 'cancelled' : 'error',
         phase: cancelled ? 'Exportación cancelada' : 'Error al exportar',
@@ -2275,7 +2412,7 @@ export function BatchPage({
                     key={option}
                     type="button"
                     aria-pressed={mode === option}
-                    title={selectedProfile.minimumVisibleGapMm ? `${selectedProfile.maxWidth / 10}×${selectedProfile.maxHeight / 10} cm · espacio libre entre contornos ${selectedProfile.minimumVisibleGapMm} mm` : undefined}
+                    title={selectedProfile.minimumVisibleGapMm ? `${selectedProfile.maxWidth / 10} × ${selectedProfile.maxHeight / 10} cm · corte láser · espacio libre entre bordes negros ${selectedProfile.minimumVisibleGapMm} mm` : undefined}
                     className={mode === option ? 'selected' : ''}
                     onClick={() => {
                       if (option === mode) return;
@@ -2291,6 +2428,35 @@ export function BatchPage({
                 );
               })}
             </div>
+            {mode === 'imprenta-2' ? (
+              <div className="imprenta2-optimization-control" aria-label="Optimización">
+                <span>Optimización</span>
+                <div className="segmented-toggle" role="group" aria-label="Estrategia de optimización">
+                  <button
+                    type="button"
+                    aria-pressed={imprenta2Optimization === 'fast'}
+                    title="Prioriza tiempo de cálculo. Puede usar algo más de material."
+                    className={imprenta2Optimization === 'fast' ? 'selected' : ''}
+                    onClick={() => {
+                      if (imprenta2Optimization === 'fast') return;
+                      setImprenta2Optimization('fast');
+                      markOptimizationStale();
+                    }}
+                  >Rápida</button>
+                  <button
+                    type="button"
+                    aria-pressed={imprenta2Optimization === 'material'}
+                    title="Busca reducir metros. Puede tardar considerablemente más."
+                    className={imprenta2Optimization === 'material' ? 'selected' : ''}
+                    onClick={() => {
+                      if (imprenta2Optimization === 'material') return;
+                      setImprenta2Optimization('material');
+                      markOptimizationStale();
+                    }}
+                  >Exprimir material</button>
+                </div>
+              </div>
+            ) : null}
           </div>
           <button
             className="batch-primary-button production-primary-action"
@@ -2414,6 +2580,7 @@ export function BatchPage({
               <div className="batch-production-summary">
                 <div className="batch-production-summary-list">
                   {results.map((result) => {
+                        const finalLayouts = finalLayoutsByFabric.get(result.fabric) ?? [];
                         const placement = summarizeProductionPlacement(
                           prepared?.definitions ?? [],
                           result,
@@ -2428,8 +2595,8 @@ export function BatchPage({
                               result.fabric.slice(1)}
                           </h3>
                           <div className="batch-metrics">
-                            <div><strong>{result.layouts.length}</strong><span>CANVAS</span></div>
-                            <div><strong>{formatMeters(result.layouts.reduce((total, layout) => total + layout.usedHeight, 0))} m</strong><span>METROS</span></div>
+                            <div><strong>{finalLayouts.reduce((total, layout) => total + exportLayoutPhysicalCopyCount(layout), 0)}</strong><span>CANVAS</span></div>
+                            <div><strong>{formatMeters(finalLayouts.reduce((total, layout) => total + layout.heightMm * exportLayoutPhysicalCopyCount(layout), 0))} m</strong><span>METROS</span></div>
                             <div><strong>{placement.placedGarments}/{placement.totalGarments}</strong><span>PRENDAS</span></div>
                             {placement.totalReplacements > 0 ? <div><strong>{placement.placedReplacements}/{placement.totalReplacements}</strong><span>REPOSICIONES</span></div> : null}
                             <div><strong>{(result.elapsedMs / 1000).toFixed(2)} s</strong><span>TIEMPO</span></div>
@@ -2484,6 +2651,7 @@ export function BatchPage({
                 exporting={isExporting}
                 exported={exportSucceeded}
                 status={isExporting ? status : null}
+                error={exportError}
                 onExport={() => void exportPdf()}
                 onCancel={() => operation.current?.abort()}
               />
@@ -2502,6 +2670,7 @@ export function BatchPage({
 
               <pre>
                 {`Perfil ....................... ${optimizationDiagnostics.profileName} ${optimizationDiagnostics.profileWidthMm}×${optimizationDiagnostics.profileHeightMm} mm
+Estrategia ................... ${optimizationDiagnostics.searchStrategy === 'fast' ? 'Rápida' : 'Exprimir material'}
 ${prepared?.profile.laserCutOutline ? `Espacio libre visible ........ ${prepared.profile.minimumVisibleGapMm} mm\nContorno láser ............... ${prepared.profile.laserCutOutlineWidthMm?.toLocaleString('es-AR')} mm negro\n` : ''}
 Preparación colecciones ..... ${optimizationDiagnostics.collectionPreparationMs.toFixed(2)} ms
 Construcción definiciones .... ${optimizationDiagnostics.definitionBuildMs.toFixed(2)} ms
@@ -2515,11 +2684,26 @@ Required nesting ............. ${optimizationDiagnostics.requiredMs.toFixed(2)} 
 Fillers ...................... ${optimizationDiagnostics.fillerMs.toFixed(2)} ms
 
 Preflight .................... ${preflightElapsedMs.current.toFixed(2)} ms
+Máxima tarea principal ....... ${optimizationDiagnostics.preflightMaxMainThreadTaskMs.toFixed(2)} ms
+Cesiones al event loop ....... ${optimizationDiagnostics.preflightYieldCount}
+Canvases internos → finales .. ${optimizationDiagnostics.internalCanvasCount} → ${optimizationDiagnostics.finalCanvasCount}
+Metros internos → finales .... ${(optimizationDiagnostics.internalUsedHeightMm / 1000).toFixed(3)} → ${(optimizationDiagnostics.finalUsedHeightMm / 1000).toFixed(3)} m
+Pares broad-phase omitidos ... ${optimizationDiagnostics.preflightBroadPhaseSkippedPairs.toLocaleString()}
+Checks exactos preflight ..... colisión ${optimizationDiagnostics.preflightExactCollisionChecks.toLocaleString()} · clearance ${optimizationDiagnostics.preflightExactClearanceChecks.toLocaleString()}
+Separación entre strips ...... ${optimizationDiagnostics.interStripVisibleGapMm.toFixed(1)} mm visibles · ${(optimizationDiagnostics.interStripVisibleGapMm + (prepared?.profile.laserCutOutline ? prepared.profile.laserCutOutlineWidthMm ?? 3 : 0)).toFixed(1)} mm nominal
+Margen exterior stroke ....... ${optimizationDiagnostics.exteriorStrokeMarginMm.toFixed(1)} mm
 Total antes de preflight ..... ${optimizationDiagnostics.totalBeforePreflightMs.toFixed(2)} ms
 
 Definiciones ................. ${optimizationDiagnostics.definitions}
 Piezas expandidas ............ ${optimizationDiagnostics.expandedPieces}
 Grupos de tela ............... ${optimizationDiagnostics.fabricGroups}
+Geometrías únicas ............ ${optimizationDiagnostics.uniqueGeometries}
+Geometría × rotación ........ ${optimizationDiagnostics.uniqueGeometryRotationVariants}
+Reutilización por identidad . ${optimizationDiagnostics.geometryReferenceCacheHits.toLocaleString()}
+Presupuestos agotados ........ ${optimizationDiagnostics.requiredCandidateBudgetStops.toLocaleString()}
+Clearance indexado ........... ${optimizationDiagnostics.clearanceIndexedCalls.toLocaleString()}
+Pares clearance candidatos .. ${optimizationDiagnostics.clearanceSegmentCandidates.toLocaleString()}
+Checks exactos clearance .... ${optimizationDiagnostics.clearanceSegmentExactChecks.toLocaleString()}
 
 Candidatos probados .......... ${optimizationDiagnostics.candidatePlacementsTested.toLocaleString()}
 Cache hits ................... ${optimizationDiagnostics.candidateCacheHits.toLocaleString()}

@@ -1,0 +1,12 @@
+{
+  "dataset": "Synthetic UI regression; production fixture counts and fast chunking",
+  "totalPieces": 1282,
+  "logicalPieceTypes": 372,
+  "uniqueRealGeometries": "not applicable to synthetic rectangles",
+  "internalCanvases": 9,
+  "finalCanvases": 1,
+  "preflightElapsedMs": 20.496000000000095,
+  "preflightMaxMainThreadTaskMs": 8.004900000000362,
+  "preflightYieldCount": 1,
+  "finalLayoutsRenderedInitially": 1
+}

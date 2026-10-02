@@ -1,0 +1,26 @@
+{
+  "generatedAt": "2026-10-01T22:53:33.774Z",
+  "status": "cancelled-time-limit",
+  "limitMs": 180000,
+  "elapsedMs": 180313.12769999998,
+  "metadata": {
+    "garments": 638,
+    "pieces": 1276,
+    "profiles": 1,
+    "canvas": {
+      "width": 1559.9833333333333,
+      "height": 4999.99,
+      "minimumPieceClearance": 6,
+      "outlineExtentMm": 1.5
+    },
+    "scanStepMm": 10,
+    "geometry": "8-vertex synthetic garment silhouettes"
+  },
+  "latestProgress": {
+    "phase": "required",
+    "completed": 825,
+    "total": 1276
+  },
+  "result": null,
+  "limitation": "Synthetic silhouettes with actual order quantities and audited source dimensions; not the real alpha contours. No export or Library import."
+}

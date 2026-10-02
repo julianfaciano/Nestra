@@ -1,0 +1,38 @@
+{
+  "dataset": "Real PNG contour profile (read-only)",
+  "fixture": "src/test/production-order-2026-10-01.ts",
+  "totalPieces": 1276,
+  "logicalPieceTypes": 372,
+  "uniqueSourceAssets": 372,
+  "uniqueRealGeometries": 217,
+  "uniqueGeometryRotationVariants": 608,
+  "contourCache": {
+    "hits": 0,
+    "misses": 372
+  },
+  "sourcePixelsDecoded": 374222488,
+  "derivedContourVertices": 942870,
+  "timingsMs": {
+    "assetReadMs": 62.67,
+    "pngDecodeMs": 8504.22,
+    "alphaBoundsMs": 910.99,
+    "contourMs": 7524.39,
+    "componentMs": 3125.55,
+    "coordinateConversionMs": 64.05,
+    "rotationPreparationMs": 32.48
+  },
+  "geometryIdentity": "Exact serialized fast contour + fine contour + all exterior cut components + placement anchor, after conversion to physical mm.",
+  "safety": {
+    "sourceAssetsModified": false,
+    "orderQuantitiesModified": false,
+    "strokeWidthMm": 3,
+    "visibleGapMm": 3,
+    "nominalClearanceMm": 6,
+    "outlineExtentMm": 1.5
+  },
+  "geometryPayload": {
+    "written": true,
+    "dataset": "Real production PNG geometry (read-only)",
+    "bytes": 24977965
+  }
+}

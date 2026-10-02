@@ -1,0 +1,59 @@
+{
+  "generatedAt": "2026-10-01T23:35:33.730Z",
+  "status": "cancelled-time-limit",
+  "limitMs": 180000,
+  "elapsedMs": 180047.28410000002,
+  "metadata": {
+    "dataset": "Real production PNG geometry (read-only)",
+    "searchStrategy": "fast",
+    "totalPieces": 1276,
+    "logicalPieceTypes": 372,
+    "uniqueRealGeometries": 217,
+    "uniqueGeometryRotationVariants": 608,
+    "benchmarkPieces": 1276,
+    "expandedPieceCopies": 1276,
+    "canvas": {
+      "width": 1559.9833333333333,
+      "height": 4999.99,
+      "minimumPieceClearance": 6,
+      "outlineExtentMm": 1.5
+    }
+  },
+  "latestProgress": {
+    "phase": "required",
+    "completed": 452,
+    "total": 1276
+  },
+  "progressSamples": [
+    {
+      "phase": "preparing",
+      "elapsedMs": 533.992
+    },
+    {
+      "phase": "required",
+      "completed": 100,
+      "total": 1276,
+      "elapsedMs": 11304.6422
+    },
+    {
+      "phase": "required",
+      "completed": 200,
+      "total": 1276,
+      "elapsedMs": 44042.0709
+    },
+    {
+      "phase": "required",
+      "completed": 300,
+      "total": 1276,
+      "elapsedMs": 97360.1638
+    },
+    {
+      "phase": "required",
+      "completed": 400,
+      "total": 1276,
+      "elapsedMs": 149590.0326
+    }
+  ],
+  "result": null,
+  "limitation": "Real PNG geometry preflight and nesting benchmark; no export or Library import."
+}

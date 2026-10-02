@@ -1,0 +1,46 @@
+{
+  "generatedAt": "2026-10-01T23:25:30.910Z",
+  "status": "cancelled-time-limit",
+  "limitMs": 180000,
+  "elapsedMs": 180017.0791,
+  "metadata": {
+    "dataset": "Real production PNG geometry (read-only)",
+    "searchStrategy": "fast",
+    "totalPieces": 1276,
+    "logicalPieceTypes": 372,
+    "uniqueRealGeometries": 217,
+    "uniqueGeometryRotationVariants": 608,
+    "expandedPieceCopies": 1276,
+    "canvas": {
+      "width": 1559.9833333333333,
+      "height": 4999.99,
+      "minimumPieceClearance": 6,
+      "outlineExtentMm": 1.5
+    }
+  },
+  "latestProgress": {
+    "phase": "required",
+    "completed": 220,
+    "total": 1276
+  },
+  "progressSamples": [
+    {
+      "phase": "preparing",
+      "elapsedMs": 514.2734999999999
+    },
+    {
+      "phase": "required",
+      "completed": 100,
+      "total": 1276,
+      "elapsedMs": 66725.3732
+    },
+    {
+      "phase": "required",
+      "completed": 200,
+      "total": 1276,
+      "elapsedMs": 154357.031
+    }
+  ],
+  "result": null,
+  "limitation": "Real PNG geometry preflight and nesting benchmark; no export or Library import."
+}

@@ -27,7 +27,7 @@ interface StoredContourPair {
 }
 
 interface ContourCacheKeyOptions {
-  readonly geometryMode?: 'all-visible-replacement';
+  readonly geometryMode?: 'all-visible-replacement' | 'all-visible-free-png';
   readonly alphaThreshold: number;
   readonly fastSimplificationPx: number;
   readonly fineSimplificationPx: number;

@@ -11,6 +11,8 @@ describe('App', () => {
     expect(
       screen.getByText('Prepará, optimizá y exportá layouts listos para producción.'),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText('Versión actual: Nestra v0.3.0 Beta')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Actualizaciones' })).toBeInTheDocument();
   });
 
   it('permite abrir la Biblioteca de siluetas', () => {

@@ -1,4 +1,11 @@
-import { contoursViolateClearance } from './polygon-clearance';
+import {
+  contoursViolateClearance,
+  indexedContoursViolateClearance,
+  indexClearanceContours,
+  prepareClearanceContours,
+  type ClearanceContourIndex,
+  type PreparedClearanceContours,
+} from './polygon-clearance';
 import {
   createNestingProfile,
   startBlock,
@@ -48,6 +55,8 @@ export interface MultiNestingInput {
   readonly fillers?: readonly FillerRequest[];
   readonly pieces: readonly MultiNestingPiece[];
   readonly canvas: MultiNestingCanvas;
+  /** REQUIRED search effort. Both strategies use the same exact geometry checks. */
+  readonly searchStrategy?: 'fast' | 'material';
   readonly scanStepMm?: number;
   /** Temporary profiling; Worker defaults to true, direct calls to false. */
   readonly diagnosticProfiling?: boolean;
@@ -55,6 +64,8 @@ export interface MultiNestingInput {
   readonly diagnosticRequiredScale?: boolean;
   /** Opt-in exact history tracking; retains emitted candidate keys for benchmarks only. */
   readonly diagnosticRequiredEnumeration?: boolean;
+  /** Benchmark-only override for measuring the production fast chunk size. */
+  readonly diagnosticFastChunkSize?: number;
 /** Lightweight phase timing: only two wall-clock measurements per run. */
 readonly diagnosticPhaseTiming?: boolean;
 }
@@ -147,7 +158,28 @@ function validateInput(input: MultiNestingInput): void {
 
 /** Counts actual work, excluding candidates skipped by the monotone rejection cache. */
 export interface NestingDiagnostics {
+  searchStrategy: 'fast' | 'material';
+  requiredCandidateBudget?: number;
+  requiredCandidateBudgetStops: number;
+  uniqueGeometryCount: number;
+  uniqueGeometryRotationVariants: number;
+  geometryReferenceCacheHits: number;
+  clearanceIndexedCalls: number;
+  clearanceSegmentCandidates: number;
+  clearanceSegmentAabbChecks: number;
+  clearanceSegmentExactChecks: number;
   profile?: NestingProfile;
+  /** Compact per-run evidence for the bounded fast production chunk fallback. */
+  fastChunkRuns?: Array<{
+    chunkIndex: number;
+    pieceStart: number;
+    pieceEnd: number;
+    pieceCount: number;
+    elapsedMs: number;
+    placedCount: number;
+    canvases: Array<{ pieceCount: number; usedHeight: number }>;
+  }>;
+  fastChunkNestingElapsedMs?: number;
   requiredPieces?: RequiredPieceDiagnostics[];
   polygonCollision: PolygonCollisionDiagnostics;
   requiredMs: number;
@@ -250,11 +282,42 @@ interface Variant {
   readonly cutComponents?: readonly Polygon[];
   readonly collisionComponents?: readonly Polygon[];
   readonly collisionComponentBounds?: readonly PolygonBounds[];
+  readonly clearanceContours?: PreparedClearanceContours;
+  readonly clearanceIndex?: ClearanceContourIndex;
+  readonly clearanceBounds: PolygonBounds;
   readonly polygon: Polygon;
   readonly bounds: PolygonBounds;
   readonly finePolygon: Polygon;
   readonly fineBounds: PolygonBounds;
   readonly rotation: PieceRotation;
+}
+
+interface GeometryReferenceKey {
+  readonly finePolygon: Polygon;
+  readonly collisionComponents?: readonly Polygon[];
+  readonly cutComponents?: readonly Polygon[];
+  readonly cutAnchor?: Polygon;
+  readonly key: string;
+}
+
+interface CachedGeometryPreparation {
+  area: number;
+  rotations: Map<PieceRotation, Variant>;
+  requiredSearchIdentities: Map<string, object>;
+}
+
+interface GeometryPreparationCache {
+  readonly geometry: Map<string, CachedGeometryPreparation>;
+  readonly componentEnvelopeCache: WeakMap<readonly Polygon[], Polygon>;
+  readonly geometryReferenceKeys: WeakMap<object, GeometryReferenceKey[]>;
+}
+
+function createGeometryPreparationCache(): GeometryPreparationCache {
+  return {
+    geometry: new Map(),
+    componentEnvelopeCache: new WeakMap(),
+    geometryReferenceKeys: new WeakMap(),
+  };
 }
 
 interface InternalPiece extends MultiNestedPiece {
@@ -265,6 +328,8 @@ interface InternalPiece extends MultiNestedPiece {
   readonly fineBounds: PolygonBounds;
   readonly bucketBounds: PolygonBounds;
   readonly collisionComponentBounds?: readonly PolygonBounds[];
+  readonly clearanceContours?: PreparedClearanceContours;
+  readonly clearanceIndex?: ClearanceContourIndex;
 }
 
 function offsetBounds(bounds: PolygonBounds, x: number, y: number): PolygonBounds {
@@ -369,6 +434,7 @@ interface MutableLayout {
   readonly buckets: Map<string, InternalPiece[]>;
   readonly rejected: Map<Variant, Set<string>>;
   readonly failedRequiredVersions: Map<object, number>;
+  readonly neighborScratch: Set<InternalPiece>;
   usedWidth: number;
   usedHeight: number;
 }
@@ -521,6 +587,8 @@ function findPlacementInLayout(
   requiredAttempt?: RequiredLayoutAttemptDiagnostics,
   requiredEnumerationContext?: RequiredEnumerationContext,
   requiredSearchIdentity?: object,
+  requiredCandidateBudget?: number,
+  fastAcceptFirstValid = false,
 ): Omit<InternalPiece, 'pieceId'> | null {
   const clearance = canvas.minimumPieceClearance ?? 0;
   const extent = canvas.outlineExtentMm ?? 0;
@@ -750,7 +818,16 @@ for (const y of orderedY) {
 // Exact edge coordinates above retain cheap contact snaps. Never enumerate
 // vertex pairs: their number grows with contour resolution, not piece count.
 }
+let examinedRequiredCandidates = 0;
+let candidateBudgetReached = false;
 for (const { x, y, variant, rejected, state, ordinal, key: candidateKey } of candidates()) {
+    if (!fillerSearch) {
+      if (requiredCandidateBudget !== undefined && examinedRequiredCandidates >= requiredCandidateBudget) {
+        candidateBudgetReached = true;
+        break;
+      }
+      examinedRequiredCandidates++;
+    }
     const snapNeighbors:InternalPiece[] | undefined=state?.snapSource ? [] : undefined;
     if(state && snapNeighbors) {
       const onGrid=(polygon:Polygon):boolean=>{
@@ -911,8 +988,13 @@ if (!fits) {
   continue;
 }
         const neighborsStart = startBlock(profile, 'neighborLookup');
-        const neighbors = new Set<InternalPiece>(newNeighbors);
-        for (const cell of newNeighbors ? [] : cellKeys(bounds)) {
+        const neighbors = layout.neighborScratch;
+        neighbors.clear();
+        if (newNeighbors) for (const neighbor of newNeighbors) neighbors.add(neighbor);
+        for (let cellY = newNeighbors ? 1 : Math.floor(bounds.minY / CELL_MM),
+          maxCellY = newNeighbors ? 0 : Math.floor(bounds.maxY / CELL_MM); cellY <= maxCellY; cellY++) {
+          for (let cellX = Math.floor(bounds.minX / CELL_MM), maxCellX = Math.floor(bounds.maxX / CELL_MM); cellX <= maxCellX; cellX++) {
+          const cell = `${cellX},${cellY}`;
           if (profile) {
             profile.counters.cellKeys++;
             profile.counters.bucketLookups++;
@@ -923,6 +1005,7 @@ if (!fits) {
             if (requiredAttempt) requiredAttempt.bucketReferences++;
             neighbors.add(neighbor);
           }
+        }
         }
         endBlock(profile, 'neighborLookup', neighborsStart);
         if (profile) {
@@ -997,35 +1080,72 @@ endBlock(profile, 'fineCandidatePolygon', finePolygonStart);
     continue;
   }
 
-  const cutComponents = variant.cutComponents?.map(p => p.map(v => ({x:v.x+x,y:v.y+y})));
+  let cutComponents: readonly Polygon[] | undefined;
   let cutBounds: PolygonBounds | undefined;
   if (clearance || extent) {
-    const nominal = cutComponents ?? collisionComponents ?? (variant.collisionComponents
-      ? variant.collisionComponents.map(p => p.map(v => ({x:v.x+x,y:v.y+y}))) : [finePolygon]);
-    cutBounds = getPolygonBounds(nominal.flat());
+    cutBounds = offsetBounds(variant.clearanceBounds, x, y);
     if (cutBounds.minX < extent - 1e-9 || cutBounds.minY < extent - 1e-9 ||
         cutBounds.maxX > canvas.width - extent + 1e-9 || cutBounds.maxY > canvas.height - extent + 1e-9) {
       rejected.add(key); continue;
     }
     let invalid = false;
-    for (const neighbor of layout.pieces) {
+    if (clearance > 0) {
+    const clearanceNeighbors = layout.neighborScratch;
+    clearanceNeighbors.clear();
+    const queryBounds = {
+      minX: cutBounds.minX - clearance,
+      minY: cutBounds.minY - clearance,
+      maxX: cutBounds.maxX + clearance,
+      maxY: cutBounds.maxY + clearance,
+      width: cutBounds.width + clearance * 2,
+      height: cutBounds.height + clearance * 2,
+    };
+    for (let cellY = Math.floor(queryBounds.minY / CELL_MM), maxCellY = Math.floor(queryBounds.maxY / CELL_MM); cellY <= maxCellY; cellY++) {
+      for (let cellX = Math.floor(queryBounds.minX / CELL_MM), maxCellX = Math.floor(queryBounds.maxX / CELL_MM); cellX <= maxCellX; cellX++) {
+        for (const neighbor of layout.buckets.get(`${cellX},${cellY}`) ?? []) clearanceNeighbors.add(neighbor);
+      }
+    }
+    for (const neighbor of clearanceNeighbors) {
       diagnostics.broadPhaseChecks++;
       const other = neighbor.cutComponents ?? neighbor.collisionComponents ?? [neighbor.finePolygon];
       const otherBounds = neighbor.cutBounds ?? neighbor.fineBounds;
       if (Math.hypot(Math.max(0, cutBounds.minX-otherBounds.maxX,otherBounds.minX-cutBounds.maxX),
         Math.max(0,cutBounds.minY-otherBounds.maxY,otherBounds.minY-cutBounds.maxY)) >= clearance) continue;
       diagnostics.exactPolygonCollisionChecks++;
-      if (contoursViolateClearance(nominal, other, clearance)) {invalid=true;break;}
+      const clearanceStart = startBlock(profile, 'clearance');
+      const violatesClearance = variant.clearanceContours && neighbor.clearanceIndex
+        ? indexedContoursViolateClearance(
+            variant.clearanceContours,
+            x - neighbor.placement.x,
+            y - neighbor.placement.y,
+            neighbor.clearanceIndex,
+            clearance,
+            diagnostics,
+          )
+        : contoursViolateClearance(
+            (variant.cutComponents ?? variant.collisionComponents ?? [variant.finePolygon]).map(component =>
+              component.map(point => ({ x: point.x + x, y: point.y + y }))),
+            other,
+            clearance,
+          );
+      endBlock(profile, 'clearance', clearanceStart);
+      if (violatesClearance) {invalid=true;break;}
+    }
     }
     if (invalid) {rejected.add(key);continue;}
   }
 
-  const fineNeighbors = new Set<InternalPiece>(newNeighbors);
-
-  for (const cell of newNeighbors ? [] : cellKeys(fineBounds)) {
+  const fineNeighbors = layout.neighborScratch;
+  fineNeighbors.clear();
+  if (newNeighbors) for (const neighbor of newNeighbors) fineNeighbors.add(neighbor);
+  for (let cellY = newNeighbors ? 1 : Math.floor(fineBounds.minY / CELL_MM),
+    maxCellY = newNeighbors ? 0 : Math.floor(fineBounds.maxY / CELL_MM); cellY <= maxCellY; cellY++) {
+    for (let cellX = Math.floor(fineBounds.minX / CELL_MM), maxCellX = Math.floor(fineBounds.maxX / CELL_MM); cellX <= maxCellX; cellX++) {
+    const cell = `${cellX},${cellY}`;
     for (const neighbor of layout.buckets.get(cell) ?? []) {
       fineNeighbors.add(neighbor);
     }
+  }
   }
 
   let fineCollision = false;
@@ -1081,6 +1201,7 @@ endBlock(profile, 'fineCandidatePolygon', finePolygonStart);
   }
 
   if (!fineCollision) {
+    cutComponents = variant.cutComponents?.map(p => p.map(v => ({x:v.x+x,y:v.y+y})));
     const placedCollisionComponents = collisionComponents ?? (variant.collisionComponents
       ? variant.collisionComponents.map((_, index) => translatedComponentAt(
           variant.collisionComponents!, index, x, y, translatedCandidateComponents, diagnostics,
@@ -1092,16 +1213,21 @@ endBlock(profile, 'fineCandidatePolygon', finePolygonStart);
           variant.collisionComponentBounds!, index, x, y, translatedCandidateComponentBounds,
         ))
       : undefined;
+    const bucketBounds = cutBounds
+      ? unionBounds(unionBounds(bounds, fineBounds), cutBounds)
+      : unionBounds(bounds, fineBounds);
     const candidate = {
       ...(cutBounds ? {cutBounds} : {}),
       ...(cutComponents ? {cutComponents} : {}),
       ...(placedCollisionComponents ? {collisionComponents:placedCollisionComponents} : {}),
       ...(placedCollisionComponentBounds ? {collisionComponentBounds:placedCollisionComponentBounds} : {}),
+      ...(variant.clearanceContours ? {clearanceContours:variant.clearanceContours} : {}),
+      ...(variant.clearanceIndex ? {clearanceIndex:variant.clearanceIndex} : {}),
       polygon,
       bounds,
       finePolygon,
       fineBounds,
-      bucketBounds: unionBounds(bounds, fineBounds),
+      bucketBounds,
       placement: { x, y, rotation: variant.rotation },
     };
     if (state) {
@@ -1134,7 +1260,7 @@ endBlock(profile, 'fineCandidatePolygon', finePolygonStart);
       if (improvesFiller(score)) {best=candidate;bestScore=score;bestFillerOrdinal=ordinal;}
       continue;
     }
-    if (!preferContact) return candidate;
+    if (fastAcceptFirstValid || !preferContact) return candidate;
     const contactNeighbors = [...fineNeighbors].filter(neighbor =>
       fineBounds.minX <= neighbor.fineBounds.maxX + heightTolerance &&
       neighbor.fineBounds.minX <= fineBounds.maxX + heightTolerance &&
@@ -1169,7 +1295,9 @@ if (!improvesScore(requiredScore(potentialGarments, contactNeighbors.length - po
     }
     continue;
   }
-}
+  }
+
+  if (candidateBudgetReached) diagnostics.requiredCandidateBudgetStops++;
 
 // Layouts only gain pieces: a collision cannot become valid later.
 rejected.add(key);
@@ -1178,9 +1306,10 @@ rejected.add(key);
   return best;
 }
 
-export function nestMultiplePieces(
+function nestMultiplePiecesCore(
   input: MultiNestingInput,
   reportProgress?: (progress: NestingProgress) => void,
+  preparationCache: GeometryPreparationCache = createGeometryPreparationCache(),
 ): MultiNestingResult {
   const profile = input.diagnosticProfiling
     ? createNestingProfile()
@@ -1189,6 +1318,16 @@ export function nestMultiplePieces(
   validateInput(input);
   reportProgress?.({ phase: 'preparing' });
   const diagnostics: NestingDiagnostics = {
+  searchStrategy: input.searchStrategy ?? 'material',
+  ...(input.searchStrategy === 'fast' ? { requiredCandidateBudget: 25_000 } : {}),
+  requiredCandidateBudgetStops: 0,
+  uniqueGeometryCount: 0,
+  uniqueGeometryRotationVariants: 0,
+  geometryReferenceCacheHits: 0,
+  clearanceIndexedCalls: 0,
+  clearanceSegmentCandidates: 0,
+  clearanceSegmentAabbChecks: 0,
+  clearanceSegmentExactChecks: 0,
   polygonCollision: createPolygonCollisionDiagnostics(),
   requiredMs: 0,
   fillerMs: 0,
@@ -1246,26 +1385,49 @@ export function nestMultiplePieces(
   if (input.diagnosticRequiredScale) diagnostics.requiredPieces = [];
   const preparationStart = startBlock(profile, 'preparation');
   // Value keys also deduplicate separately allocated definitions / worker clones.
-  // Local to this run: no stale geometry after edits and no cross-job retention.
-  const geometry = new Map<
-    string,
-    {
-      area: number;
-      rotations: Map<PieceRotation, Variant>;
-      requiredSearchIdentities: Map<string, object>;
+  // Scoped to one public nesting call: chunks share immutable preparation, never search state.
+  const { geometry, componentEnvelopeCache, geometryReferenceKeys } = preparationCache;
+  const envelopeFor = (components: readonly Polygon[]): Polygon => {
+    let envelope = componentEnvelopeCache.get(components);
+    if (!envelope) {
+      envelope = componentEnvelope(components);
+      componentEnvelopeCache.set(components, envelope);
     }
-  >();
+    return envelope;
+  };
   const prepared = input.pieces
     .map((piece) => {
       if (piece.collisionComponents) diagnostics.piecesUsingCollisionComponents++;
-      const sourcePolygon = piece.collisionComponents ? componentEnvelope(piece.collisionComponents) : piece.polygon;
+      const sourcePolygon = piece.collisionComponents ? envelopeFor(piece.collisionComponents) : piece.polygon;
       const fineSourcePolygon = piece.collisionComponents ? sourcePolygon : piece.finePolygon ?? piece.polygon;
 
-const key = JSON.stringify([
-  sourcePolygon.map((point) => [point.x, point.y]),
-  fineSourcePolygon.map((point) => [point.x, point.y]),
-  piece.collisionComponents, piece.cutComponents, piece.cutAnchor,
-]);
+      const referenceOwner = piece.collisionComponents ?? piece.polygon;
+      const sameReferenceGeometry = geometryReferenceKeys.get(referenceOwner)?.find((entry) =>
+        entry.finePolygon === fineSourcePolygon &&
+        entry.collisionComponents === piece.collisionComponents &&
+        entry.cutComponents === piece.cutComponents &&
+        entry.cutAnchor === piece.cutAnchor,
+      );
+      let key: string;
+      if (sameReferenceGeometry) {
+        diagnostics.geometryReferenceCacheHits++;
+        key = sameReferenceGeometry.key;
+      } else {
+        key = JSON.stringify([
+          sourcePolygon.map((point) => [point.x, point.y]),
+          fineSourcePolygon.map((point) => [point.x, point.y]),
+          piece.collisionComponents, piece.cutComponents, piece.cutAnchor,
+        ]);
+        const references = geometryReferenceKeys.get(referenceOwner) ?? [];
+        references.push({
+          finePolygon: fineSourcePolygon,
+          ...(piece.collisionComponents ? { collisionComponents: piece.collisionComponents } : {}),
+          ...(piece.cutComponents ? { cutComponents: piece.cutComponents } : {}),
+          ...(piece.cutAnchor ? { cutAnchor: piece.cutAnchor } : {}),
+          key,
+        });
+        geometryReferenceKeys.set(referenceOwner, references);
+      }
       let cached = geometry.get(key);
       if (!cached) {
         const bounds = getPolygonBounds(sourcePolygon);
@@ -1309,10 +1471,21 @@ const key = JSON.stringify([
                 return {x:r.x-rotatedAnchor.minX,y:r.y-rotatedAnchor.minY};
               }));
             }
+            const clearanceContoursSource = cutComponents ?? collisionComponents ?? [finePolygon];
+            const clearanceBounds = getPolygonBounds(clearanceContoursSource.flat());
+            const preparedClearanceContours = input.canvas.minimumPieceClearance
+              ? prepareClearanceContours(clearanceContoursSource)
+              : undefined;
+            const clearanceIndex = preparedClearanceContours
+              ? indexClearanceContours(preparedClearanceContours)
+              : undefined;
             variant = {
               ...(cutComponents ? {cutComponents} : {}),
               ...(collisionComponents ? {collisionComponents} : {}),
               ...(collisionComponentBounds ? {collisionComponentBounds} : {}),
+              ...(preparedClearanceContours ? {clearanceContours:preparedClearanceContours} : {}),
+              ...(clearanceIndex ? {clearanceIndex} : {}),
+              clearanceBounds,
               polygon,
               bounds: getPolygonBounds(polygon),
               finePolygon,
@@ -1340,6 +1513,11 @@ const key = JSON.stringify([
       return { piece, variants, area: cached.area, requiredSearchIdentity };
     })
     .sort((a, b) => b.area - a.area);
+  diagnostics.uniqueGeometryCount = geometry.size;
+  diagnostics.uniqueGeometryRotationVariants = [...geometry.values()].reduce(
+    (total, entry) => total + entry.rotations.size,
+    0,
+  );
   endBlock(profile, 'preparation', preparationStart);
   const layouts: MutableLayout[] = [];
 const unplacedPieceIds: string[] = [];
@@ -1388,11 +1566,13 @@ for (const [pieceOffset, { piece, variants, requiredSearchIdentity }] of prepare
         input.scanStepMm ?? 10,
         diagnostics,
         undefined,
-        layout.pieces.length > 0 ? piece.kind ?? false : false,
+        input.searchStrategy === 'fast' ? false : layout.pieces.length > 0 ? piece.kind ?? false : false,
         undefined,
         attempt,
         requiredEnumerationContext,
         requiredSearchIdentity,
+        input.searchStrategy === 'fast' ? 25_000 : undefined,
+        input.searchStrategy === 'fast',
       );
       if (attempt && pieceDiagnostics) {
         attempt.elapsedMs = performance.now() - attemptStartedAt;
@@ -1414,6 +1594,7 @@ for (const [pieceOffset, { piece, variants, requiredSearchIdentity }] of prepare
         buckets: new Map(),
         rejected: new Map(),
         failedRequiredVersions: new Map(),
+        neighborScratch: new Set(),
         usedWidth: 0,
         usedHeight: 0,
       };
@@ -1433,6 +1614,8 @@ for (const [pieceOffset, { piece, variants, requiredSearchIdentity }] of prepare
         attempt,
         requiredEnumerationContext,
         requiredSearchIdentity,
+        input.searchStrategy === 'fast' ? 25_000 : undefined,
+        input.searchStrategy === 'fast',
       );
       if (attempt && pieceDiagnostics) {
         attempt.elapsedMs = performance.now() - attemptStartedAt;
@@ -1480,7 +1663,7 @@ const fillerStartedAt =
       for (const placed of layout.pieces) {
         const source = sourceById.get(placed.pieceId)!.piece;
         const bounds = source.artworkSize
-          ? artworkBounds(source.collisionComponents ? componentEnvelope(source.collisionComponents) : source.polygon, placed.placement, source.artworkSize)
+          ? artworkBounds(source.collisionComponents ? envelopeFor(source.collisionComponents) : source.polygon, placed.placement, source.artworkSize)
           : placed.bounds;
         full = full ? unionBounds(full, bounds) : bounds;
       }
@@ -1501,7 +1684,7 @@ const fillerStartedAt =
         variant.bounds.width > 1e-9 &&
         variant.bounds.height > 1e-9);
       const artworkVariants = new Map(variants.flatMap(variant => source.piece.artworkSize
-        ? [[variant.rotation, prepareArtworkBounds(source.piece.collisionComponents ? componentEnvelope(source.piece.collisionComponents) : source.piece.polygon, variant.rotation, source.piece.artworkSize)] as const]
+        ? [[variant.rotation, prepareArtworkBounds(source.piece.collisionComponents ? envelopeFor(source.piece.collisionComponents) : source.piece.polygon, variant.rotation, source.piece.artworkSize)] as const]
         : []));
       const fullArtworkAt = (placement: PolygonPlacement): PolygonBounds | undefined => {
         const bounds = artworkVariants.get(placement.rotation);
@@ -1615,4 +1798,200 @@ const fillerStartedAt =
   };
   if (profile) finishProfile(profile, engineStart);
   return result;
+}
+
+// Real-order comparisons selected 150 as the best production speed/material
+// compromise. Batches at or below this size stay in one REQUIRED search.
+const FAST_PRODUCTION_CHUNK_SIZE = 150;
+
+function fullInputGeometryStats(pieces: readonly MultiNestingPiece[]) {
+  interface ReferenceEntry {
+    readonly finePolygon: Polygon;
+    readonly collisionComponents?: readonly Polygon[];
+    readonly cutComponents?: readonly Polygon[];
+    readonly cutAnchor?: Polygon;
+    readonly key: string;
+  }
+  const envelopes = new WeakMap<readonly Polygon[], Polygon>();
+  const referenceKeys = new WeakMap<object, ReferenceEntry[]>();
+  const rotationsByGeometry = new Map<string, Set<PieceRotation>>();
+  for (const piece of pieces) {
+    let sourcePolygon = piece.polygon;
+    if (piece.collisionComponents) {
+      let envelope = envelopes.get(piece.collisionComponents);
+      if (!envelope) {
+        envelope = componentEnvelope(piece.collisionComponents);
+        envelopes.set(piece.collisionComponents, envelope);
+      }
+      sourcePolygon = envelope;
+    }
+    const finePolygon = piece.collisionComponents ? sourcePolygon : piece.finePolygon ?? piece.polygon;
+    const owner = piece.collisionComponents ?? piece.polygon;
+    let entry = referenceKeys.get(owner)?.find(candidate =>
+      candidate.finePolygon === finePolygon &&
+      candidate.collisionComponents === piece.collisionComponents &&
+      candidate.cutComponents === piece.cutComponents &&
+      candidate.cutAnchor === piece.cutAnchor,
+    );
+    if (!entry) {
+      const key = JSON.stringify([
+        sourcePolygon.map(point => [point.x, point.y]),
+        finePolygon.map(point => [point.x, point.y]),
+        piece.collisionComponents,
+        piece.cutComponents,
+        piece.cutAnchor,
+      ]);
+      entry = {
+        finePolygon,
+        ...(piece.collisionComponents ? { collisionComponents: piece.collisionComponents } : {}),
+        ...(piece.cutComponents ? { cutComponents: piece.cutComponents } : {}),
+        ...(piece.cutAnchor ? { cutAnchor: piece.cutAnchor } : {}),
+        key,
+      };
+      const entries = referenceKeys.get(owner) ?? [];
+      entries.push(entry);
+      referenceKeys.set(owner, entries);
+    }
+    const rotations = rotationsByGeometry.get(entry.key) ?? new Set<PieceRotation>();
+    for (const rotation of piece.allowedRotations) rotations.add(rotation);
+    rotationsByGeometry.set(entry.key, rotations);
+  }
+  return {
+    uniqueGeometryCount: rotationsByGeometry.size,
+    uniqueGeometryRotationVariants: [...rotationsByGeometry.values()].reduce((sum, rotations) => sum + rotations.size, 0),
+  };
+}
+
+function mergeChunkProfiles(profiles: readonly NestingProfile[]): NestingProfile | undefined {
+  const first = profiles[0];
+  if (!first) return undefined;
+  const merged = JSON.parse(JSON.stringify(first)) as NestingProfile;
+  for (const next of profiles.slice(1)) {
+    merged.totalMs += next.totalMs;
+    merged.unclassifiedMs += next.unclassifiedMs;
+    for (const [key, timing] of Object.entries(next.timings)) {
+      const target = (merged.timings as Record<string, { calls: number; samples: number; sampledMs: number; estimatedMs: number }>)[key]!;
+      target.calls += timing.calls;
+      target.samples += timing.samples;
+      target.sampledMs += timing.sampledMs;
+    }
+    for (const [key, value] of Object.entries(next.counters)) {
+      const counters = merged.counters as Record<string, number>;
+      counters[key] = (counters[key] ?? 0) + value;
+    }
+  }
+  for (const timing of Object.values(merged.timings))
+    timing.estimatedMs = timing.samples ? timing.sampledMs * timing.calls / timing.samples : 0;
+  return merged;
+}
+
+function mergeChunkDiagnostics(
+  results: readonly MultiNestingResult[],
+  input: MultiNestingInput,
+): NestingDiagnostics | undefined {
+  const all = results.flatMap(result => result.diagnostics ? [result.diagnostics] : []);
+  const first = all[0];
+  if (!first) return undefined;
+  const merged = JSON.parse(JSON.stringify(first)) as NestingDiagnostics;
+  for (const next of all.slice(1)) {
+    for (const [key, value] of Object.entries(next)) {
+      if (typeof value === 'number' && key !== 'requiredCandidateBudget' &&
+          key !== 'uniqueGeometryCount' && key !== 'uniqueGeometryRotationVariants') {
+        const target = merged as unknown as Record<string, number>;
+        target[key] = (target[key] ?? 0) + value;
+      }
+    }
+    for (const [key, value] of Object.entries(next.polygonCollision)) {
+      const collision = merged.polygonCollision as unknown as Record<string, number>;
+      collision[key] = (collision[key] ?? 0) + value;
+    }
+  }
+  const geometryStats = fullInputGeometryStats(input.pieces);
+  merged.searchStrategy = 'fast';
+  merged.requiredCandidateBudget = 25_000;
+  merged.requiredCandidateBudgetStops = all.reduce((sum, item) => sum + item.requiredCandidateBudgetStops, 0);
+  merged.uniqueGeometryCount = geometryStats.uniqueGeometryCount;
+  merged.uniqueGeometryRotationVariants = geometryStats.uniqueGeometryRotationVariants;
+  const profile = mergeChunkProfiles(all.flatMap(item => item.profile ? [item.profile] : []));
+  if (profile) merged.profile = profile;
+  else delete merged.profile;
+  delete merged.requiredPieces;
+  return merged;
+}
+
+/**
+ * Fast Imprenta 2 fallback: chunks preserve all physical copies and exact
+ * geometry checks; their complete layouts become canvases in one result.
+ */
+export function nestMultiplePieces(
+  input: MultiNestingInput,
+  reportProgress?: (progress: NestingProgress) => void,
+): MultiNestingResult {
+  const chunkSize = Number.isSafeInteger(input.diagnosticFastChunkSize) &&
+    (input.diagnosticFastChunkSize ?? 0) >= 100
+    ? input.diagnosticFastChunkSize!
+    : FAST_PRODUCTION_CHUNK_SIZE;
+  const shouldChunk = input.searchStrategy === 'fast' &&
+    (input.canvas.minimumPieceClearance ?? 0) > 0 &&
+    !input.fillers?.length &&
+    !input.diagnosticRequiredScale &&
+    input.pieces.length > chunkSize;
+  if (!shouldChunk) return nestMultiplePiecesCore(input, reportProgress);
+
+  reportProgress?.({ phase: 'preparing' });
+  const chunks: MultiNestingResult[] = [];
+  const fastChunkRuns: NonNullable<NestingDiagnostics['fastChunkRuns']> = [];
+  const layouts: MultiNestingLayout[] = [];
+  const unplacedPieceIds: string[] = [];
+  const preparationCache = createGeometryPreparationCache();
+  let placedCount = 0;
+  const nestingStartedAt = performance.now();
+  for (let offset = 0; offset < input.pieces.length; offset += chunkSize) {
+    const pieces = input.pieces.slice(offset, offset + chunkSize);
+    const isLastChunk = offset + pieces.length >= input.pieces.length;
+    const chunkStartedAt = performance.now();
+    const chunk = nestMultiplePiecesCore({ ...input, pieces }, progress => {
+      if (progress.phase === 'preparing') return;
+      if (progress.phase === 'required') {
+        reportProgress?.({
+          phase: 'required',
+          completed: offset + progress.completed,
+          total: input.pieces.length,
+        });
+      } else if (progress.phase === 'fillers') {
+        reportProgress?.(progress);
+      } else if (isLastChunk) {
+        reportProgress?.(progress);
+      }
+    }, preparationCache);
+    fastChunkRuns.push({
+      chunkIndex: fastChunkRuns.length + 1,
+      pieceStart: offset + 1,
+      pieceEnd: offset + pieces.length,
+      pieceCount: pieces.length,
+      elapsedMs: performance.now() - chunkStartedAt,
+      placedCount: chunk.placedCount,
+      canvases: chunk.layouts.map(layout => ({
+        pieceCount: layout.pieces.length,
+        usedHeight: layout.usedHeight,
+      })),
+    });
+    chunks.push(chunk);
+    placedCount += chunk.placedCount;
+    unplacedPieceIds.push(...chunk.unplacedPieceIds);
+    for (const layout of chunk.layouts)
+      layouts.push({ ...layout, index: layouts.length });
+  }
+  const diagnostics = mergeChunkDiagnostics(chunks, input);
+  if (diagnostics) {
+    diagnostics.fastChunkRuns = fastChunkRuns;
+    diagnostics.fastChunkNestingElapsedMs = performance.now() - nestingStartedAt;
+  }
+  return {
+    layouts,
+    unplacedPieceIds,
+    placedCount,
+    totalPieceCount: input.pieces.length,
+    ...(diagnostics ? { diagnostics } : {}),
+  };
 }

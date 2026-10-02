@@ -1,0 +1,193 @@
+{
+  "generatedAt": "2026-10-01T23:32:24.625Z",
+  "status": "completed",
+  "limitMs": 180000,
+  "elapsedMs": 1019.6888000000001,
+  "metadata": {
+    "dataset": "Real production PNG geometry (read-only)",
+    "searchStrategy": "fast",
+    "totalPieces": 1276,
+    "logicalPieceTypes": 372,
+    "uniqueRealGeometries": 217,
+    "uniqueGeometryRotationVariants": 608,
+    "benchmarkPieces": 25,
+    "expandedPieceCopies": 25,
+    "canvas": {
+      "width": 1559.9833333333333,
+      "height": 4999.99,
+      "minimumPieceClearance": 6,
+      "outlineExtentMm": 1.5
+    }
+  },
+  "latestProgress": {
+    "phase": "finalizing"
+  },
+  "progressSamples": [
+    {
+      "phase": "preparing",
+      "elapsedMs": 536.8584000000001
+    },
+    {
+      "phase": "finalizing",
+      "elapsedMs": 1014.3824
+    }
+  ],
+  "result": {
+    "piecesPlaced": 25,
+    "totalPieces": 25,
+    "totalOrderPieces": 1276,
+    "unplaced": 0,
+    "canvases": 2,
+    "usedHeights": [
+      532.7833333333333,
+      413.5527777777778
+    ],
+    "totalUsedHeightMm": 946.3361111111111,
+    "totalUsedMeters": 0.9463361111111112,
+    "diagnostics": {
+      "searchStrategy": "fast",
+      "requiredCandidateBudget": 25000,
+      "requiredCandidateBudgetStops": 0,
+      "uniqueGeometries": 5,
+      "uniqueGeometryRotationVariants": 16,
+      "geometryReferenceCacheHits": 20,
+      "polygonTransforms": 16,
+      "candidatePlacementsTested": 60001,
+      "candidateCacheHits": 69227,
+      "broadPhaseChecks": 109833,
+      "exactPolygonCollisionChecks": 59595,
+      "layoutsCreated": 2,
+      "requiredMs": 457.4329999999999,
+      "clearanceIndexedCalls": 210,
+      "clearanceSegmentCandidates": 1725882,
+      "clearanceSegmentAabbChecks": 1725882,
+      "clearanceSegmentExactChecks": 136,
+      "profile": {
+        "sampleEvery": 128,
+        "totalMs": 478.5220999999999,
+        "unclassifiedMs": -201.4673456154659,
+        "timings": {
+          "preparation": {
+            "calls": 1,
+            "samples": 1,
+            "sampledMs": 19.848400000000083,
+            "estimatedMs": 19.848400000000083
+          },
+          "candidateCoordinates": {
+            "calls": 27,
+            "samples": 27,
+            "sampledMs": 4.6072999999995545,
+            "estimatedMs": 4.6072999999995545
+          },
+          "rejectionCache": {
+            "calls": 129228,
+            "samples": 1011,
+            "sampledMs": 0.3238999999994121,
+            "estimatedMs": 41.4015323441385
+          },
+          "candidateBounds": {
+            "calls": 60001,
+            "samples": 470,
+            "sampledMs": 0.07879999999977372,
+            "estimatedMs": 10.059742127630686
+          },
+          "candidatePolygon": {
+            "calls": 55549,
+            "samples": 436,
+            "sampledMs": 0.2521000000008371,
+            "estimatedMs": 32.11904334873051
+          },
+          "canvasFit": {
+            "calls": 55549,
+            "samples": 436,
+            "sampledMs": 0.1282999999986032,
+            "estimatedMs": 16.346185091565157
+          },
+          "neighborLookup": {
+            "calls": 55549,
+            "samples": 436,
+            "sampledMs": 0.29740000000003874,
+            "estimatedMs": 37.89053348624347
+          },
+          "boundsOverlap": {
+            "calls": 109572,
+            "samples": 857,
+            "sampledMs": 0.158899999998539,
+            "estimatedMs": 20.316208634585664
+          },
+          "polygonsOverlap": {
+            "calls": 59385,
+            "samples": 465,
+            "sampledMs": 2.619199999999637,
+            "estimatedMs": 334.4971870967278
+          },
+          "clearance": {
+            "calls": 210,
+            "samples": 2,
+            "sampledMs": 1.4279999999998836,
+            "estimatedMs": 149.93999999998778
+          },
+          "candidateKey": {
+            "calls": 33260,
+            "samples": 262,
+            "sampledMs": 0.06399999999894135,
+            "estimatedMs": 8.124580152537364
+          },
+          "fineCandidatePolygon": {
+            "calls": 401,
+            "samples": 3,
+            "sampledMs": 0.03619999999989432,
+            "estimatedMs": 4.838733333319207
+          },
+          "contact": {
+            "calls": 0,
+            "samples": 0,
+            "sampledMs": 0,
+            "estimatedMs": 0
+          },
+          "componentOverlap": {
+            "calls": 0,
+            "samples": 0,
+            "sampledMs": 0,
+            "estimatedMs": 0
+          },
+          "candidateGeneration": {
+            "calls": 0,
+            "samples": 0,
+            "sampledMs": 0,
+            "estimatedMs": 0
+          }
+        },
+        "counters": {
+          "coordinateSets": 27,
+          "xCoordinates": 1962,
+          "yCoordinates": 702,
+          "rejectionCacheLookups": 129228,
+          "rejectionCacheHits": 69227,
+          "cellKeys": 204958,
+          "bucketLookups": 204958,
+          "neighborCandidates": 496674,
+          "neighborDuplicates": 254064,
+          "uniqueNeighbors": 242610,
+          "segmentPairs": 0,
+          "segmentAabbRejected": 0,
+          "exactSegmentTests": 0,
+          "collinearTests": 0,
+          "pointInPolygonCalls": 0
+        }
+      },
+      "requiredPieceRanges": [
+        {
+          "pieceStart": 1,
+          "pieceEnd": 25,
+          "elapsedMs": 456.9061000000005,
+          "maxPieceMs": 153.27150000000006,
+          "candidateOpportunities": 129230,
+          "broadPhaseChecks": 109572,
+          "exactCollisionChecks": 59385
+        }
+      ]
+    }
+  },
+  "limitation": "Real PNG geometry preflight and nesting benchmark; no export or Library import."
+}

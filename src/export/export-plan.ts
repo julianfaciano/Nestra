@@ -1,5 +1,5 @@
 import { pieceDefinitionLabel, type BatchPieceDefinition } from '../domain/production-batch';
-import { canvasProfileHeightLimit, nominalSilhouetteClearanceMm, outlineExtentMm, LASER_CUT_OUTLINE_COLOR, LASER_CUT_OUTLINE_WIDTH_MM, PRODUCTIVE_EXPORT_PPI, type CanvasProfile } from '../domain/canvas-profile';
+import { canvasProfileHeightLimit, canvasProfileWidthLimit, nominalSilhouetteClearanceMm, outlineExtentMm, LASER_CUT_OUTLINE_COLOR, LASER_CUT_OUTLINE_WIDTH_MM, PRODUCTIVE_EXPORT_PPI, type CanvasProfile } from '../domain/canvas-profile';
 import { validateCanvasProfile } from '../domain/canvas-profile-validation';
 import { minimumContourDistance } from '../geometry/polygon-clearance';
 import { expandPieceDefinitions } from '../domain/piece-instance';
@@ -32,6 +32,16 @@ export interface PreparedBatch {
   readonly results: readonly FabricBatchResult[];
   readonly profile: CanvasProfile;
 }
+
+const nestingValidatedBatches = new WeakSet<PreparedBatch>();
+
+/** Records that the exact nesting worker already checked every emitted placement. */
+export function certifyPreparedBatchGeometry(
+  batch: PreparedBatch,
+): PreparedBatch {
+  nestingValidatedBatches.add(batch);
+  return batch;
+}
 export interface SourceCrop {
   readonly xPx: number;
   readonly yPx: number;
@@ -45,6 +55,7 @@ export interface SourceCrop {
 export interface ArtworkPlacement {
   readonly cutComponents?: readonly Polygon[];
   readonly extra?: ExtraPieceIdentity;
+  readonly pieceId?: string;
   readonly definition: BatchPieceDefinition;
   readonly placement: PolygonPlacement;
   readonly translateX: number;
@@ -68,6 +79,23 @@ export interface PreflightReport {
   readonly warnings: readonly string[];
   readonly layouts: readonly ExportLayout[];
   readonly boundsIssues: readonly PreflightBoundsIssue[];
+  readonly diagnostics?: PreflightDiagnostics;
+}
+
+export interface PreflightDiagnostics {
+  readonly geometryAlreadyChecked: boolean;
+  readonly candidatePairs: number;
+  readonly broadPhaseSkippedPairs: number;
+  readonly exactCollisionChecks: number;
+  readonly exactClearanceChecks: number;
+  readonly internalCanvasCount: number;
+  readonly packedCanvasCount: number;
+  readonly exportedFileCount: number;
+  readonly usedHeightBeforeMm: number;
+  readonly usedHeightAfterMm: number;
+  readonly interStripVisibleGapMm: number;
+  readonly interStripNominalClearanceMm: number;
+  readonly exteriorStrokeMarginMm: number;
 }
 export interface PreflightBoundsIssue {
   readonly kind: 'visible-bounds-overflow';
@@ -233,7 +261,7 @@ function exportLayoutSignature(
     .sort();
 
   return JSON.stringify({
-    ...(layout.laserOutline ? {laserOutline:layout.laserOutline,cutContours:layout.pieces.map(p=>p.cutComponents)} : {}),
+    ...(layout.laserOutline ? { laserOutline: layout.laserOutline } : {}),
     fabric: layout.fabric,
     widthMm: stableNumber(layout.widthMm),
     heightMm: stableNumber(layout.heightMm),
@@ -243,38 +271,79 @@ function exportLayoutSignature(
   });
 }
 
+function sameContours(
+  first: readonly Polygon[] | undefined,
+  second: readonly Polygon[] | undefined,
+): boolean {
+  if (first === second) return true;
+  if (!first || !second || first.length !== second.length) return false;
+  return first.every((polygon, polygonIndex) => {
+    const other = second[polygonIndex];
+    return Boolean(other && polygon.length === other.length && polygon.every((point, pointIndex) =>
+      point.x === other[pointIndex]?.x && point.y === other[pointIndex]?.y));
+  });
+}
+
+function sameLayoutCutGeometry(first: ExportLayout, second: ExportLayout): boolean {
+  if (first.pieces.length !== second.pieces.length ||
+      first.laserOutline?.widthMm !== second.laserOutline?.widthMm ||
+      first.laserOutline?.color !== second.laserOutline?.color) return false;
+
+  const available = new Map<string, ArtworkPlacement[]>();
+  for (const art of first.pieces) {
+    const key = JSON.stringify([
+      art.definition.id,
+      art.placement.rotation,
+      stableNumber(art.translateX - first.offsetX),
+      stableNumber(art.translateY - first.offsetY),
+    ]);
+    const matches = available.get(key) ?? [];
+    matches.push(art);
+    available.set(key, matches);
+  }
+  for (const art of second.pieces) {
+    const key = JSON.stringify([
+      art.definition.id,
+      art.placement.rotation,
+      stableNumber(art.translateX - second.offsetX),
+      stableNumber(art.translateY - second.offsetY),
+    ]);
+    const matches = available.get(key);
+    const matchIndex = matches?.findIndex(candidate => sameContours(candidate.cutComponents, art.cutComponents)) ?? -1;
+    if (matchIndex < 0) return false;
+    matches!.splice(matchIndex, 1);
+  }
+  return [...available.values()].every(matches => matches.length === 0);
+}
+
 export function deduplicateExportLayouts(
   layouts: readonly ExportLayout[],
 ): ExportLayout[] {
-  const grouped = new Map<
-    string,
-    {
-      readonly layout: ExportLayout;
-      copies: number;
-    }
-  >();
+  const grouped = new Map<string, { readonly layout: ExportLayout; copies: number }[]>();
 
   for (const layout of layouts) {
     const signature =
       exportLayoutSignature(layout);
 
-    const existing = grouped.get(signature);
+    const candidates = grouped.get(signature) ?? [];
+    const existing = candidates.find(group => sameLayoutCutGeometry(group.layout, layout));
 
     if (existing) {
       existing.copies += 1;
       continue;
     }
 
-    grouped.set(signature, {
+    candidates.push({
       layout,
       copies: 1,
     });
+    grouped.set(signature, candidates);
   }
 
   const nameIndexes = new Map<string, number>();
   const result: ExportLayout[] = [];
 
-  for (const group of grouped.values()) {
+  for (const group of [...grouped.values()].flat()) {
     const base = fabricSlug(group.layout.fabric);
 
     const nameIndex =
@@ -296,6 +365,11 @@ export function deduplicateExportLayouts(
   }
 
   return result;
+}
+
+export function exportLayoutPhysicalCopyCount(layout: ExportLayout): number {
+  const copies = /_(\d+)_copias(?:_[a-z]+)?\.png$/i.exec(layout.name)?.[1];
+  return copies ? Number(copies) : 1;
 }
 
 interface PlacedArtworkBounds {
@@ -398,7 +472,198 @@ function createBoundsIssue(
   };
 }
 
-export function preflightBatch(batch: PreparedBatch): PreflightReport {
+export interface PreflightProgress {
+  readonly phase: 'validation' | 'consolidation';
+  readonly completedPlacements: number;
+  readonly totalPlacements: number;
+}
+
+export interface CooperativePreflightResult {
+  readonly report: PreflightReport;
+  readonly elapsedMs: number;
+  readonly maxMainThreadTaskMs: number;
+  readonly yieldCount: number;
+}
+
+interface MutablePreflightMetrics {
+  candidatePairs: number;
+  broadPhaseSkippedPairs: number;
+  exactCollisionChecks: number;
+  exactClearanceChecks: number;
+}
+
+interface StripForPacking {
+  readonly originalIndex: number;
+  readonly layout: ExportLayout;
+}
+
+interface StripBin {
+  readonly fabric: string;
+  readonly strips: StripForPacking[];
+  usedHeightMm: number;
+}
+
+export interface ConsolidatedImprenta2Layouts {
+  readonly layouts: ExportLayout[];
+  readonly packedCanvasCount: number;
+  readonly usedHeightBeforeMm: number;
+  readonly usedHeightAfterMm: number;
+  readonly interStripVisibleGapMm: number;
+  readonly exteriorStrokeMarginMm: number;
+}
+
+function unionComponentBounds(components: readonly Polygon[]): PolygonBounds {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const component of components) {
+    const bounds = getPolygonBounds(component);
+    minX = Math.min(minX, bounds.minX);
+    minY = Math.min(minY, bounds.minY);
+    maxX = Math.max(maxX, bounds.maxX);
+    maxY = Math.max(maxY, bounds.maxY);
+  }
+  return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+function boundsDistance(first: PolygonBounds, second: PolygonBounds): number {
+  const dx = Math.max(0, first.minX - second.maxX, second.minX - first.maxX);
+  const dy = Math.max(0, first.minY - second.maxY, second.minY - first.maxY);
+  return Math.hypot(dx, dy);
+}
+
+function boundsCanOverlap(first: PolygonBounds, second: PolygonBounds): boolean {
+  return first.minX <= second.maxX && second.minX <= first.maxX &&
+    first.minY <= second.maxY && second.minY <= first.maxY;
+}
+
+function* packImprenta2Strips(
+  layouts: readonly ExportLayout[],
+  profile: CanvasProfile,
+  totalPlacements: number,
+): Generator<PreflightProgress, ConsolidatedImprenta2Layouts> {
+  const visibleGap = profile.minimumVisibleGapMm ?? 0;
+  const exteriorMargin = outlineExtentMm(profile);
+  const maxRasterHeight = Math.floor(profile.maxHeight * PX_PER_MM) / PX_PER_MM;
+  const usableHeight = maxRasterHeight - 2 * exteriorMargin;
+  const bins: StripBin[] = [];
+  const layoutsByFabric = new Map<string, StripForPacking[]>();
+  layouts.forEach((layout, originalIndex) => {
+    const group = layoutsByFabric.get(layout.fabric) ?? [];
+    group.push({ layout, originalIndex });
+    layoutsByFabric.set(layout.fabric, group);
+  });
+
+  for (const [fabric, fabricStrips] of layoutsByFabric) {
+    const strips = fabricStrips.sort((first, second) =>
+      second.layout.heightMm - first.layout.heightMm || first.originalIndex - second.originalIndex);
+    const fabricBins: StripBin[] = [];
+    for (const strip of strips) {
+      let bestBin: StripBin | undefined;
+      let bestRemaining = Infinity;
+      for (const bin of fabricBins) {
+        const candidateHeight = bin.usedHeightMm + (bin.strips.length ? visibleGap : 0) + strip.layout.heightMm;
+        const remaining = usableHeight - candidateHeight;
+        if (remaining >= -1e-7 && remaining < bestRemaining) {
+          bestBin = bin;
+          bestRemaining = remaining;
+        }
+      }
+      if (!bestBin) {
+        if (strip.layout.heightMm > usableHeight + 1e-7) {
+          const excessMm = strip.layout.heightMm - usableHeight;
+          throw new Error(
+            `El canvas interno ${strip.layout.name} mide ${strip.layout.heightMm.toFixed(3)} mm; ` +
+            `el máximo es ${usableHeight.toFixed(3)} mm para conservar ${exteriorMargin.toFixed(1)} mm ` +
+            `de margen exterior de stroke arriba y abajo (exceso ${excessMm.toFixed(3)} mm).`,
+          );
+        }
+        bestBin = { fabric, strips: [], usedHeightMm: 0 };
+        fabricBins.push(bestBin);
+      }
+      if (bestBin.strips.length) bestBin.usedHeightMm += visibleGap;
+      bestBin.strips.push(strip);
+      bestBin.usedHeightMm += strip.layout.heightMm;
+    }
+    bins.push(...fabricBins);
+  }
+
+  const output: ExportLayout[] = [];
+  let completedPlacements = 0;
+  for (const [binIndex, bin] of bins.entries()) {
+    const firstLayout = bin.strips[0]!.layout;
+    if (bin.strips.some(strip => strip.layout.fabric !== firstLayout.fabric ||
+        strip.layout.widthMm !== profile.maxWidth || !Number.isFinite(strip.layout.offsetX))) {
+      throw new Error('No se pueden consolidar strips con tela, ancho u origen X inválidos.');
+    }
+    const pieces: ArtworkPlacement[] = [];
+    let cursorY = exteriorMargin;
+    for (const [stripIndex, strip] of bin.strips.entries()) {
+      const shiftY = cursorY - strip.layout.offsetY;
+      for (const art of strip.layout.pieces) {
+        pieces.push({
+          ...art,
+          placement: { ...art.placement, y: art.placement.y + shiftY },
+          // Normalize each cropped internal canvas to the fixed-width sheet.
+          // The placement remains in the original nesting-space coordinates.
+          translateX: art.translateX - strip.layout.offsetX,
+          translateY: art.translateY + shiftY,
+          ...(art.cutComponents ? {
+            cutComponents: art.cutComponents.map(contour => contour.map(point => ({ x: point.x - strip.layout.offsetX, y: point.y + shiftY }))),
+          } : {}),
+        });
+        completedPlacements++;
+        yield { phase: 'consolidation', completedPlacements, totalPlacements };
+      }
+      cursorY += strip.layout.heightMm;
+      if (stripIndex < bin.strips.length - 1) cursorY += visibleGap;
+    }
+    const heightMm = cursorY + exteriorMargin;
+    const heightPx = Math.ceil(heightMm * PX_PER_MM - 1e-9);
+    if (!(heightMm > 0) || heightPx > Math.floor(profile.maxHeight * PX_PER_MM)) {
+      throw new Error(`La consolidación excede la altura imprimible en el canvas ${binIndex + 1}.`);
+    }
+    output.push({
+      ...firstLayout,
+      name: `${fabricSlug(firstLayout.fabric)}_1_copia${letterSuffix(binIndex)}.png`,
+      widthMm: profile.maxWidth,
+      widthPx: Math.round(profile.maxWidth * PX_PER_MM),
+      heightMm,
+      heightPx,
+      offsetX: 0,
+      offsetY: 0,
+      pieces,
+    });
+  }
+
+  return {
+    layouts: output,
+    packedCanvasCount: output.length,
+    usedHeightBeforeMm: layouts.reduce((total, layout) => total + layout.heightMm, 0),
+    usedHeightAfterMm: output.reduce((total, layout) => total + layout.heightMm, 0),
+    interStripVisibleGapMm: visibleGap,
+    exteriorStrokeMarginMm: exteriorMargin,
+  };
+}
+
+export function consolidateImprenta2ExportLayouts(
+  layouts: readonly ExportLayout[],
+  profile: CanvasProfile,
+): ConsolidatedImprenta2Layouts {
+  const steps = packImprenta2Strips(layouts, profile,
+    layouts.reduce((total, layout) => total + layout.pieces.length, 0));
+  while (true) {
+    const next = steps.next();
+    if (next.done) return next.value;
+  }
+}
+
+function* preflightBatchSteps(
+  batch: PreparedBatch,
+  metrics: MutablePreflightMetrics,
+): Generator<PreflightProgress, PreflightReport> {
+  const geometryAlreadyChecked = nestingValidatedBatches.has(batch);
+  const totalPlacements = batch.results.reduce((total, result) =>
+    total + result.layouts.reduce((layoutTotal, layout) => layoutTotal + layout.pieces.length, 0), 0);
+  let completedPlacements = 0;
   const errors: string[] = [];
   const boundsIssues: PreflightBoundsIssue[] = [];
   const warnings = [
@@ -406,7 +671,7 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
 ];
   const layouts: ExportLayout[] = [];
   const { profile } = batch;
-  if (!Number.isFinite(profile.maxWidth) || profile.maxWidth <= 0 || profile.maxWidth > 1480 ||
+  if (!Number.isFinite(profile.maxWidth) || profile.maxWidth <= 0 || profile.maxWidth > canvasProfileWidthLimit(profile) ||
       !Number.isFinite(profile.maxHeight) || profile.maxHeight <= 0 ||
       profile.maxHeight > canvasProfileHeightLimit(profile)) errors.push('Perfil físico inválido.');
   if (validateCanvasProfile(profile).length) errors.push('Configuración del perfil inválida.');
@@ -463,6 +728,7 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
       const extent = outlineExtentMm(profile);
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const piece of layout.pieces) {
+        yield { phase: 'validation', completedPlacements: ++completedPlacements, totalPlacements };
         let d: BatchPieceDefinition | undefined;
         if (piece.extra) {
           d = definitionsById.get(piece.extra.definitionId);
@@ -563,7 +829,7 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
         }
         minX = Math.min(minX, bounds.minX); minY = Math.min(minY, bounds.minY);
         maxX = Math.max(maxX, bounds.maxX); maxY = Math.max(maxY, bounds.maxY);
-        const art: ArtworkPlacement = { definition:d, placement:piece.placement, translateX:tx, translateY:ty, sourceCrop, ...(profile.laserCutOutline ? {cutComponents} : {}), ...(piece.extra ? { extra: piece.extra } : {}) };
+        const art: ArtworkPlacement = { pieceId: piece.pieceId, definition:d, placement:piece.placement, translateX:tx, translateY:ty, sourceCrop, ...(profile.laserCutOutline ? {cutComponents} : {}), ...(piece.extra ? { extra: piece.extra } : {}) };
         arts.push(art);
         artworkBoundsRecords.push({
           pieceId: piece.pieceId,
@@ -572,24 +838,60 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
           bounds,
         });
       }
-      for (let a = 0; a < actualPolygons.length; a++) for (let b = a+1; b < actualPolygons.length; b++) {
-        if (componentsOverlap(actualPolygons[a]!, actualPolygons[b]!)) errors.push(result.fabric + ': colisión en canvas ' + (layout.index + 1));
-      }
       const nominalClearance = nominalSilhouetteClearanceMm(profile);
-      if (nominalClearance) {
-        for (let a=0;a<cutRecords.length;a++) for (let b=a+1;b<cutRecords.length;b++) {
-          const first=cutRecords[a]!, second=cutRecords[b]!;
-          const distance=minimumContourDistance(first.components,second.components);
-          if (distance < nominalClearance-1e-9) {
-            const visibleGap = distance - (profile.laserCutOutline ? profile.laserCutOutlineWidthMm ?? LASER_CUT_OUTLINE_WIDTH_MM : 0);
-            errors.push(`Canvas ${layout.index+1}: ${pieceIdentity(first.definition)} deja ${visibleGap.toLocaleString('es-AR',{minimumFractionDigits:3,maximumFractionDigits:3})} mm libres entre contornos negros de ${pieceIdentity(second.definition)}. ${profile.name} requiere ${profile.minimumVisibleGapMm?.toLocaleString('es-AR',{minimumFractionDigits:1}) ?? nominalClearance.toLocaleString('es-AR',{minimumFractionDigits:1})} mm visibles (separación nominal ${nominalClearance.toLocaleString('es-AR',{minimumFractionDigits:1})} mm).`);
+      if (!geometryAlreadyChecked && actualPolygons.length > 1) {
+        const collisionBounds = actualPolygons.map(unionComponentBounds);
+        const collisionOrder = collisionBounds.map((bounds, index) => ({ bounds, index }))
+          .sort((first, second) => first.bounds.minY - second.bounds.minY || first.index - second.index);
+        let activeCollision: typeof collisionOrder = [];
+        for (const current of collisionOrder) {
+          activeCollision = activeCollision.filter(previous => previous.bounds.maxY >= current.bounds.minY - 1e-9);
+          for (const previous of activeCollision) {
+            metrics.candidatePairs++;
+            if (boundsCanOverlap(previous.bounds, current.bounds)) {
+              metrics.exactCollisionChecks++;
+              if (componentsOverlap(actualPolygons[previous.index]!, actualPolygons[current.index]!)) {
+                errors.push(result.fabric + ': colisión en canvas ' + (layout.index + 1));
+              }
+            } else {
+              metrics.broadPhaseSkippedPairs++;
+            }
+            yield { phase: 'validation', completedPlacements, totalPlacements };
+          }
+          activeCollision.push(current);
+        }
+
+        if (nominalClearance > 0 && cutRecords.length > 1) {
+          const cutBounds = cutRecords.map(record => unionComponentBounds(record.components));
+          const clearanceOrder = cutBounds.map((bounds, index) => ({ bounds, index }))
+            .sort((first, second) => first.bounds.minY - second.bounds.minY || first.index - second.index);
+          let activeClearance: typeof clearanceOrder = [];
+          for (const current of clearanceOrder) {
+            activeClearance = activeClearance.filter(previous => previous.bounds.maxY + nominalClearance >= current.bounds.minY - 1e-9);
+            for (const previous of activeClearance) {
+              metrics.candidatePairs++;
+              if (boundsDistance(previous.bounds, current.bounds) < nominalClearance - 1e-9) {
+                metrics.exactClearanceChecks++;
+                const first = cutRecords[previous.index]!;
+                const second = cutRecords[current.index]!;
+                const distance = minimumContourDistance(first.components, second.components);
+                if (distance < nominalClearance - 1e-9) {
+                  const visibleGap = distance - (profile.laserCutOutline ? profile.laserCutOutlineWidthMm ?? LASER_CUT_OUTLINE_WIDTH_MM : 0);
+                  errors.push(`Canvas ${layout.index+1}: ${pieceIdentity(first.definition)} deja ${visibleGap.toLocaleString('es-AR',{minimumFractionDigits:3,maximumFractionDigits:3})} mm libres entre contornos negros de ${pieceIdentity(second.definition)}. ${profile.name} requiere ${profile.minimumVisibleGapMm?.toLocaleString('es-AR',{minimumFractionDigits:1}) ?? nominalClearance.toLocaleString('es-AR',{minimumFractionDigits:1})} mm visibles (separación nominal ${nominalClearance.toLocaleString('es-AR',{minimumFractionDigits:1})} mm).`);
+                }
+              } else {
+                metrics.broadPhaseSkippedPairs++;
+              }
+              yield { phase: 'validation', completedPlacements, totalPlacements };
+            }
+            activeClearance.push(current);
           }
         }
       }
       // Keep the productive width fixed. The crop uses the same printable-alpha
       // threshold as nesting and still envelopes every island above that threshold.
       const contentWidthMm = maxX - minX;
-      const widthMm = PRODUCTIVE_CANVAS_WIDTH_MM, heightMm = maxY - minY;
+      const widthMm = profile.kind === 'imprenta-2' ? profile.maxWidth : PRODUCTIVE_CANVAS_WIDTH_MM, heightMm = maxY - minY;
       const offsetX = minX < 0 ? minX : Math.max(0, maxX - widthMm);
       if (!(contentWidthMm > 0 && heightMm > 0)) {
         errors.push(`Canvas ${layout.index + 1}: dimensiones visibles inválidas.`);
@@ -620,7 +922,7 @@ export function preflightBatch(batch: PreparedBatch): PreflightReport {
       const index = names.get(base) ?? 0; names.set(base, index+1);
       const widthPx = Math.max(1, Math.round(widthMm * PX_PER_MM));
       const heightPx = Math.max(1, profile.laserCutOutline ? Math.ceil(heightMm * PX_PER_MM - 1e-9) : Math.round(heightMm * PX_PER_MM));
-      if (widthPx > Math.floor(PRODUCTIVE_CANVAS_WIDTH_MM * PX_PER_MM) || heightPx > Math.floor(profile.maxHeight * PX_PER_MM)) {
+      if (widthPx > Math.floor(widthMm * PX_PER_MM) || heightPx > Math.floor(profile.maxHeight * PX_PER_MM)) {
         errors.push('El redondeo raster excede el perfil; dejá al menos 0,1 mm de margen.'); continue;
       }
       if (profile.laserCutOutline && cutRecords.some(record => {
@@ -652,15 +954,107 @@ if (!layouts.length) {
   errors.push('No hay canvas exportables.');
 }
 
-const deduplicatedLayouts =
-  errors.length === 0
-    ? deduplicateExportLayouts(layouts)
-    : layouts;
+let finalLayouts = layouts;
+let consolidation: ConsolidatedImprenta2Layouts | undefined;
+if (errors.length === 0 && profile.kind === 'imprenta-2') {
+  const steps = packImprenta2Strips(layouts, profile, totalPlacements);
+  while (true) {
+    const next = steps.next();
+    if (next.done) {
+      consolidation = next.value;
+      finalLayouts = next.value.layouts;
+      break;
+    }
+    yield next.value;
+  }
+}
+
+yield { phase: 'validation', completedPlacements: totalPlacements, totalPlacements };
+const deduplicatedLayouts = errors.length === 0
+  ? deduplicateExportLayouts(finalLayouts)
+  : finalLayouts;
 
 return {
   errors: [...new Set(errors)],
   warnings: [...new Set(warnings)],
   layouts: deduplicatedLayouts,
   boundsIssues,
+  diagnostics: {
+    geometryAlreadyChecked,
+    candidatePairs: metrics.candidatePairs,
+    broadPhaseSkippedPairs: metrics.broadPhaseSkippedPairs,
+    exactCollisionChecks: metrics.exactCollisionChecks,
+    exactClearanceChecks: metrics.exactClearanceChecks,
+    internalCanvasCount: layouts.length,
+    packedCanvasCount: consolidation?.packedCanvasCount ?? layouts.length,
+    exportedFileCount: deduplicatedLayouts.length,
+    usedHeightBeforeMm: consolidation?.usedHeightBeforeMm ?? layouts.reduce((total, layout) => total + layout.heightMm, 0),
+    usedHeightAfterMm: consolidation?.usedHeightAfterMm ?? finalLayouts.reduce((total, layout) => total + layout.heightMm, 0),
+    interStripVisibleGapMm: consolidation?.interStripVisibleGapMm ?? 0,
+    interStripNominalClearanceMm: consolidation ?
+      consolidation.interStripVisibleGapMm + (profile.laserCutOutline ? profile.laserCutOutlineWidthMm ?? LASER_CUT_OUTLINE_WIDTH_MM : 0) : 0,
+    exteriorStrokeMarginMm: consolidation?.exteriorStrokeMarginMm ?? 0,
+  },
 };
+}
+
+export function preflightBatch(batch: PreparedBatch): PreflightReport {
+  const steps = preflightBatchSteps(batch, {
+    candidatePairs: 0,
+    broadPhaseSkippedPairs: 0,
+    exactCollisionChecks: 0,
+    exactClearanceChecks: 0,
+  });
+  while (true) {
+    const next = steps.next();
+    if (next.done) return next.value;
+  }
+}
+
+export async function preflightBatchCooperatively(
+  batch: PreparedBatch,
+  signal: AbortSignal,
+  onProgress?: (progress: PreflightProgress) => void,
+): Promise<CooperativePreflightResult> {
+  const startedAt = performance.now();
+  let sliceStartedAt = startedAt;
+  let maxMainThreadTaskMs = 0;
+  let yieldCount = 0;
+  let lastProgressKey = '';
+  const steps = preflightBatchSteps(batch, {
+    candidatePairs: 0,
+    broadPhaseSkippedPairs: 0,
+    exactCollisionChecks: 0,
+    exactClearanceChecks: 0,
+  });
+
+  while (true) {
+    if (signal.aborted) throw new Error('Optimización cancelada.');
+    const next = steps.next();
+    if (next.done) {
+      maxMainThreadTaskMs = Math.max(maxMainThreadTaskMs, performance.now() - sliceStartedAt);
+      return {
+        report: next.value,
+        elapsedMs: performance.now() - startedAt,
+        maxMainThreadTaskMs,
+        yieldCount,
+      };
+    }
+
+    const progressPercent = next.value.totalPlacements
+      ? Math.floor(next.value.completedPlacements / next.value.totalPlacements * 100)
+      : 100;
+    const progressKey = `${next.value.phase}:${progressPercent}`;
+    if (progressKey !== lastProgressKey) {
+      lastProgressKey = progressKey;
+      onProgress?.(next.value);
+    }
+
+    if (performance.now() - sliceStartedAt >= 8) {
+      maxMainThreadTaskMs = Math.max(maxMainThreadTaskMs, performance.now() - sliceStartedAt);
+      yieldCount++;
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      sliceStartedAt = performance.now();
+    }
+  }
 }

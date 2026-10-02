@@ -14,8 +14,20 @@ self.onmessage = (event: MessageEvent<MultiNestingInput>) => {
       self.postMessage({ progress });
     });
 
+    const uiResult = {
+      ...result,
+      layouts: result.layouts.map(layout => ({
+        ...layout,
+        pieces: layout.pieces.map(({ collisionComponents, cutComponents, ...piece }) => {
+          void collisionComponents;
+          void cutComponents;
+          return piece;
+        }),
+      })),
+    };
+
     self.postMessage({
-      result,
+      result: uiResult,
       workerMs: performance.now() - startedAt,
     });
   } catch (error) {

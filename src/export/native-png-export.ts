@@ -2,10 +2,17 @@ import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import { preflightBatch, PX_PER_MM, type ExportLayout, type PreparedBatch } from './export-plan';
 import { rotatePoint } from '../geometry/polygon-transform';
 import { prepareExportSourceBlob, sourceCropKey } from './export-source-crop';
+import { createSizeMarkGlyph, type SizeMarkMask } from '../domain/size-mark-raster';
+import { readSizeMarkPngMetadata, type SizeMarkPngMetadata } from '../domain/size-mark-metadata';
 
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 export interface NativePngPlan {
   laserOutline?: { width: number; contours: number[][][] };
+  sizeMarkMasks?: { width: number; height: number; data: number[] }[];
+  sizeMarks?: { pieceIndex: number; source: number; x: number; y: number; maskIndex: number; contourIndices: number[] }[];
+  /** Exact PDF page size; raster coordinates still use fixed 300 PPI. Laser only. */
+  pageWidthMm?: number;
+  pageHeightMm?: number;
   name: string;
   width: number;
   height: number;
@@ -38,14 +45,66 @@ export interface PngExportDiagnostics {
   sourceBytes: number;
   layouts: NativeRenderDiagnostics[];
 }
-export function nativePngPlan(layout: ExportLayout, sources: ReadonlyMap<string, number>): NativePngPlan {
+export type NativeSizeMarkSources = ReadonlyMap<string, SizeMarkPngMetadata>;
+
+export function nativePngPlan(
+  layout: ExportLayout,
+  sources: ReadonlyMap<string, number>,
+  sizeMarkSources?: NativeSizeMarkSources,
+): NativePngPlan {
   if (layout.laserOutline && layout.pieces.some(art => !art.cutComponents?.length)) {
     throw new Error('Falta el contorno de corte para la exportación láser.');
   }
+  const laserContours: number[][][] = [];
+  const contourIndicesByPiece = layout.pieces.map(art => {
+    const indexes: number[] = [];
+    for (const component of art.cutComponents ?? []) {
+      indexes.push(laserContours.length);
+      laserContours.push(component.map(vertex =>
+        [(vertex.x - layout.offsetX) * PX_PER_MM, (vertex.y - layout.offsetY) * PX_PER_MM]));
+    }
+    return indexes;
+  });
+  const masks: { width: number; height: number; data: number[] }[] = [];
+  const maskIndexBySize = new Map<string, number>();
+  const markers: NonNullable<NativePngPlan['sizeMarks']> = [];
+  if (layout.laserOutline && sizeMarkSources) {
+    layout.pieces.forEach((art, pieceIndex) => {
+      const metadata = sizeMarkSources.get(art.definition.id);
+      if (!metadata || art.definition.kind === 'free-png') return;
+      if (metadata.size !== art.definition.size || metadata.height !== 18) {
+        throw new Error(`Metadata del marcador no coincide con ${art.definition.fileName}.`);
+      }
+      const mask = createSizeMarkGlyph(metadata.size) as SizeMarkMask;
+      if (mask.width !== metadata.width || mask.height !== metadata.height) {
+        throw new Error(`Dimensiones de la máscara del marcador inválidas: ${art.definition.fileName}.`);
+      }
+      const crop = art.sourceCrop;
+      const x = metadata.x - (crop?.xPx ?? 0);
+      const y = metadata.y - (crop?.yPx ?? 0);
+      if (x < 0 || y < 0 || x + mask.width > (crop?.widthPx ?? art.definition.sourceWidthPx) ||
+          y + mask.height > (crop?.heightPx ?? art.definition.sourceHeightPx)) {
+        throw new Error(`El recorte de exportación excluye el marcador: ${art.definition.fileName}.`);
+      }
+      if (!contourIndicesByPiece[pieceIndex]?.length) {
+        throw new Error(`Falta el contorno para clippear el marcador: ${art.definition.fileName}.`);
+      }
+      let maskIndex = maskIndexBySize.get(metadata.size);
+      if (maskIndex === undefined) {
+        maskIndex = masks.length;
+        maskIndexBySize.set(metadata.size, maskIndex);
+        masks.push({ width: mask.width, height: mask.height, data: Array.from(mask.data) });
+      }
+      const source = sources.get(art.definition.id);
+      if (source === undefined) throw new Error('Fuente no preparada: ' + art.definition.fileName);
+      markers.push({ pieceIndex, source, x, y, maskIndex, contourIndices: contourIndicesByPiece[pieceIndex]! });
+    });
+  }
   return {
+    ...(layout.laserOutline ? { pageWidthMm: layout.widthMm, pageHeightMm: layout.heightMm } : {}),
     ...(layout.laserOutline ? {laserOutline:{width:layout.laserOutline.widthMm*PX_PER_MM,
-      contours:layout.pieces.flatMap(art => (art.cutComponents ?? []).map(p => p.map(v =>
-        [(v.x-layout.offsetX)*PX_PER_MM,(v.y-layout.offsetY)*PX_PER_MM])))}} : {}),
+      contours:laserContours}} : {}),
+    ...(markers.length ? { sizeMarkMasks: masks, sizeMarks: markers } : {}),
     name: layout.name, width: layout.widthPx, height: layout.heightPx,
     offsetX: layout.offsetX * PX_PER_MM, offsetY: layout.offsetY * PX_PER_MM,
     pieces: layout.pieces.map(art => {
@@ -110,7 +169,9 @@ export async function exportBatchPng(
     const preparation = performance.now();
     const sources = new Map<string, number>();
     const urls = new Map<string, { source: number; width: number; height: number }>();
+    const marksBySourceCrop = new Map<string, SizeMarkPngMetadata>();
     const hashes = new Map<string, { source: number; width: number; height: number }>();
+    const sizeMarkSources = new Map<string, SizeMarkPngMetadata>();
     const artworks = new Map(report.layouts.flatMap(layout => layout.pieces.map(art => [art.definition.id, art] as const)));
     for (const art of artworks.values()) {
       const d = art.definition;
@@ -119,6 +180,11 @@ export async function exportBatchPng(
       const reused = urls.get(cacheKey);
       if (reused) {
         sources.set(d.id, reused.source);
+        const reusedMark = marksBySourceCrop.get(cacheKey);
+        if (reusedMark) {
+          if (d.kind === 'free-png' || reusedMark.size !== d.size) throw new Error('Metadata de marcador incompatible con la pieza: ' + d.fileName);
+          sizeMarkSources.set(d.id, reusedMark);
+        }
         continue;
       }
       progress('Preparando PNG fuente · ' + (sources.size + 1) + '/' + artworks.size);
@@ -128,11 +194,21 @@ export async function exportBatchPng(
       if (!response.ok) throw new Error('No se pudo leer ' + d.fileName);
       const original = await response.blob();
       if (!original.size || original.size > MAX_SOURCE_BYTES) throw new Error('El PNG fuente debe ocupar como máximo 64 MiB: ' + d.fileName);
+      const mark = readSizeMarkPngMetadata(new Uint8Array(await original.arrayBuffer()));
+      if (mark) {
+        if (d.kind === 'free-png' || mark.size !== d.size || mark.x + mark.width > d.sourceWidthPx ||
+            mark.y + mark.height > d.sourceHeightPx) {
+          throw new Error('Metadata de marcador incompatible con la pieza: ' + d.fileName);
+        }
+        sizeMarkSources.set(d.id, mark);
+        marksBySourceCrop.set(cacheKey, mark);
+      }
       const prepared = await prepareExportSourceBlob(
         original,
         d,
         art.sourceCrop,
         signal,
+        mark,
       );
       const bytes = await prepared.blob.arrayBuffer();
       if (!bytes.byteLength || bytes.byteLength > MAX_SOURCE_BYTES) throw new Error('La fuente PNG recortada debe ocupar como máximo 64 MiB: ' + d.fileName);
@@ -196,7 +272,7 @@ export async function exportBatchPng(
         diagnostics: NativeRenderDiagnostics;
       }>('render_native_png', {
         id: session,
-        plan: nativePngPlan(layout, sources),
+        plan: nativePngPlan(layout, sources, sizeMarkSources),
         destination,
         progress: channel,
       });

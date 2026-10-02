@@ -96,12 +96,12 @@ describe('límites alpha del plan de exportación', () => {
     const report=preflightBatch(input);
     expect(report.errors).toEqual([]);
     const layout=report.layouts[0]!;
-    expect(getPolygonBounds(layout.pieces[0]!.cutComponents!.flat())).toMatchObject({minX:100,minY:200});
+    expect(getPolygonBounds(layout.pieces[0]!.cutComponents!.flat())).toMatchObject({minX:100,minY:3});
     expect(layout.pieces[0]!.sourceCrop).toMatchObject({xPx:1,yPx:2,widthPx:4,heightPx:3});
     const plan=nativePngPlan(layout,new Map([[d.id,0]]));
     expect(plan.pieces[0]!.width/PX_PER_MM).toBeCloseTo(4,10);
     expect(plan.pieces[0]!.height/PX_PER_MM).toBeCloseTo(3,10);
-    expect(Math.min(...plan.laserOutline!.contours[0]!.map(v=>v[1]!))).toBeCloseTo(1.5*PX_PER_MM,9);
+    expect(Math.min(...plan.laserOutline!.contours[0]!.map(v=>v[1]!))).toBeCloseTo(3*PX_PER_MM,9);
   });
   it.each([
     { rotation: 0 as const, x: 100, y: 200 },
