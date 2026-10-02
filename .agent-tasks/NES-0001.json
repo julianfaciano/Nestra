@@ -1,0 +1,58 @@
+{
+  "id": "NES-0001",
+  "title": "Investigar read-only por qué Imprenta 2 produjo aproximadamente 115.64 m frente a un histórico de Calandra de aproximadamente 109 m",
+  "type": "performance",
+  "mode": "read-only",
+  "objective": "Explicar con evidencia reproducible la diferencia de consumo, desglosando ancho, fragmentación, consolidación y alturas; entregar un reporte sin cambios funcionales.",
+  "constraints": [
+    "Cero modificación de código productivo, nesting, geometría, PDF, PNG o UI; no producir ni exportar trabajos reales.",
+    "Canvas Imprenta 2: 1560 × 5000 mm; gap visible: 3 mm; stroke láser negro: 3 mm; clearance nominal: 6 mm; margen exterior: 1.5 mm. No relajar estas invariantes ni geometría para mejorar métricas.",
+    "No acceder a .fanaticotas, backups externos, archivos .env/credenciales ni carpetas fuera del worktree; las rutas citadas en informes no autorizan su lectura.",
+    "Usar primero los datos existentes listados en inputs. No ejecutar scripts históricos que lean assets externos.",
+    "Un benchmark nuevo requiere necesidad justificada y datos autorizados locales; documentar commit, input/hash, comando, parámetros, semilla si aplica, entorno, timeout y repeticiones. Sin estos requisitos, pedir decisión humana.",
+    "Separar hechos medidos, cálculos derivados, hipótesis y datos faltantes. No presentar ~115.64 m, ~109 m o 63 → ~24 como mediciones verificadas sin identificar sus fuentes.",
+    "El reporte se entrega en la respuesta/result inline; allowedPaths vacío implica cero escritura de archivos. Publicar o guardar un reporte requerirá otra tarea autorizada.",
+    "QA en una segunda sesión limpia después de los gates; sin commit, push, merge ni GitHub remoto."
+  ],
+  "protectedPaths": [
+    ".git",
+    ".fanaticotas",
+    ".env",
+    "backups",
+    "credentials",
+    "src",
+    "src-tauri",
+    "scripts",
+    "package.json",
+    "package-lock.json"
+  ],
+  "allowedPaths": [],
+  "inputs": [
+    "docs/imprenta-2.md",
+    "docs/imprenta-2-performance-summary.md",
+    "docs/imprenta-2-real-production-1282-consolidation.json",
+    "docs/imprenta-2-real-production-1282-chunk150.json",
+    "docs/imprenta-2-ui-run-real-1282.json",
+    "docs/imprenta-2-real-production-chunked-150-final.json",
+    "docs/imprenta-2-benchmark.json"
+  ],
+  "acceptanceCriteria": [
+    "Identificar corrida y población comparables: piezas, prendas, ancho/perfil, rotaciones, estrategia y cálculo de metros. Conciliar ~115.64/109 m y 63 → ~24 con la corrida versionada 67 → 24 y 117.557678 m; si falta evidencia, declararlo y pedir decisión humana.",
+    "Medir utilización de ancho por layout y ponderada, con denominador, unidades y fórmula; si faltan coordenadas/áreas, declarar qué no puede medirse.",
+    "Cuantificar fragmentación, huecos internos, espacio lateral desperdiciado y colas parciales; separar área real de siluetas, aproximación por bbox y capacidad nominal no consumida.",
+    "Desglosar el efecto de consolidación de 63 layouts internos → ~24 finales: suma de alturas antes/después, seams/márgenes, cantidad de layouts y costo en mm; no atribuir ahorro de metros sólo a reducir archivos.",
+    "Reportar distribución de alturas internas/finales: cantidad, mínimo, mediana, percentiles y máximo con método; distinguir altura útil exportada de capacidad completa 5000 mm.",
+    "Expresar espacio desperdiciado en mm², porcentaje y metros equivalentes con denominador explícito, evitando doble conteo entre causas.",
+    "Presentar hipótesis verificables Imprenta 2 vs Calandra, evidencia a favor/en contra y experimento mínimo para refutarlas; mantener invariantes físicas y no mezclar poblaciones.",
+    "Incluir fuentes/campos, cálculos reproducibles, limitaciones y datos faltantes. Todo benchmark nuevo debe permitir repetirlo sin datos externos ni cambios productivos.",
+    "Entregar sólo reporte con secciones de hechos medidos, cálculos, hipótesis y decisiones pendientes; los gates administrativos no prueban sus conclusiones. QA independiente revisará evidencia y alcance."
+  ],
+  "gates": ["node-runtime", "diff-check"],
+  "implementer": { "adapter": "codex", "model": null, "session": "new" },
+  "reviewer": { "adapter": "codex", "model": null, "session": "new" },
+  "retryCount": 0,
+  "maxRetries": 2,
+  "status": "APPROVED",
+  "result": null,
+  "humanDecisionRequired": false
+}

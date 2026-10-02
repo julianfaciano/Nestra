@@ -14,6 +14,10 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "agent:validate": "node scripts/agent-task.mjs",
+    "agent:gate": "node scripts/agent-gate.mjs",
+    "agent:dispatch": "node scripts/agent-dispatch.mjs",
+    "agent:test": "node --test scripts/check-agent-infra.mjs",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml --locked",
     "build:windows": "tauri build --no-bundle"
   },

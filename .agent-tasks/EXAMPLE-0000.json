@@ -1,0 +1,32 @@
+{
+  "id": "EXAMPLE-0000",
+  "title": "Validar el circuito local sin ejecutar agentes",
+  "type": "maintenance",
+  "mode": "read-only",
+  "objective": "Comprobar formato, planificación y gates locales inocuos.",
+  "constraints": [
+    "Sin escritura productiva, agentes, benchmarks ni operaciones remotas."
+  ],
+  "protectedPaths": [
+    ".git",
+    ".fanaticotas",
+    ".env",
+    "backups",
+    "credentials",
+    "src",
+    "src-tauri"
+  ],
+  "allowedPaths": [],
+  "inputs": ["docs/STATE.md"],
+  "acceptanceCriteria": [
+    "Tarea válida; dry-run sin ejecución; gates reportan PASS o FAIL y exit code."
+  ],
+  "gates": ["node-runtime", "diff-check"],
+  "implementer": { "adapter": "codex", "model": null, "session": "new" },
+  "reviewer": { "adapter": "codex", "model": null, "session": "new" },
+  "retryCount": 0,
+  "maxRetries": 2,
+  "status": "APPROVED",
+  "result": null,
+  "humanDecisionRequired": false
+}
